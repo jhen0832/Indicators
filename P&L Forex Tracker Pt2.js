@@ -1,5 +1,5 @@
 /* ================================================================
-   Liquid Charts Pro — P&L Card v5
+   Liquid Charts Pro — P&L Card v5 (Final)
    ================================================================
    INSTALL:
    1. Open Liquid Charts Pro → open any chart
@@ -18,8 +18,10 @@ class MyIndicator extends UserDefinedIndicator {
         this.$todayDateStr   = new Date().toISOString().slice(0, 10);
         this.$currency       = "$";
         this.$lastParams     = {};
-        this.$panelLeft      = null;  // set on first move
-        this.$panelTop       = 14;
+
+        // Panel position — tracked here, updated via sendHTMLMessage
+        this.$posX = null;   // null = use default right:14
+        this.$posY = 14;
 
         var self = this;
         setInterval(function() { self._tick(); }, 1000);
@@ -57,27 +59,30 @@ class MyIndicator extends UserDefinedIndicator {
         }
     }
 
+    /* -------------------------------------------------------
+       onHTMLMessage
+       The card sends drag deltas here.
+       We reposition by calling createHTML again with new coords.
+       This is the only reliable way on this platform.
+    ------------------------------------------------------- */
     onHTMLMessage(msg) {
         if (!msg) return;
-        if (msg.action === "move") {
-            try {
-                // On first drag, initialise left from reported chart width
-                // Default start position: right side of chart (approx 800px wide)
-                if (this.$panelLeft === null) {
-                    var chartW = msg.chartW || 800;
-                    this.$panelLeft = chartW - 260 - 14;
-                }
-                this.$panelLeft = Math.max(0, this.$panelLeft + (msg.dx || 0));
-                this.$panelTop  = Math.max(0, (this.$panelTop || 14) + (msg.dy || 0));
-                this.changeHTML({
-                    style: {
-                        width:  "260px",
-                        height: "360px",
-                        left:   this.$panelLeft + "px",
-                        top:    this.$panelTop  + "px"
-                    }
-                });
-            } catch(e) {}
+
+        if (msg.action === "drag") {
+            // First drag — initialise X from right side
+            if (this.$posX === null) {
+                this.$posX = Math.max(0, (msg.winW || 800) - 254 - 20);
+            }
+            this.$posX = Math.max(0, this.$posX + (msg.dx || 0));
+            this.$posY = Math.max(0, this.$posY + (msg.dy || 0));
+
+            // Reposition by rebuilding with new style
+            // changeHTML is not reliable — instead push position
+            // back into the HTML via sendHTMLMessage
+            this.sendHTMLMessage({
+                moveX: this.$posX,
+                moveY: this.$posY
+            });
         }
     }
 
@@ -87,9 +92,8 @@ class MyIndicator extends UserDefinedIndicator {
         var balance  = 0;
         var floating = 0;
         var currency = this.$currency;
-
-        // Detect demo vs live account
         var accountType = "active";
+
         try {
             var acct = Framework.Account;
             if (acct) {
@@ -98,37 +102,13 @@ class MyIndicator extends UserDefinedIndicator {
                 currency = acct.currencySymbol || acct.depositCurrency || "$";
                 this.$currency = currency;
 
-                // Read the account name string — the platform puts it
-                // right in Framework.Account. From the UI we can see:
-                //   ECN_248617_9  = real live account
-                //   Dem...        = demo account
-                // So we check what the account name starts with.
-                var acctNameStr = acct.accountName || acct.name ||
-                                  acct.login       || acct.id   || "";
-                acctNameStr = String(acctNameStr);
-
-                var nameLower = acctNameStr.toLowerCase();
-
-                var isDemo = false;
-                var isLive = false;
-
-                // Demo detection — starts with "dem" or contains "demo"
-                if (nameLower.indexOf("dem") === 0)    isDemo = true;
-                if (nameLower.indexOf("demo") >= 0)    isDemo = true;
-
-                // Live detection — starts with "ecn", "live", "real", "pro"
-                if (nameLower.indexOf("ecn")  === 0)   isLive = true;
-                if (nameLower.indexOf("live") === 0)   isLive = true;
-                if (nameLower.indexOf("real") === 0)   isLive = true;
-                if (nameLower.indexOf("pro")  === 0)   isLive = true;
-
-                // Also check known Framework properties as fallback
-                if (acct.isDemo === true)              isDemo = true;
-                if (acct.isDemo === false)             isLive = true;
-
-                // Demo wins if both somehow trigger
-                if (isDemo)      accountType = "demo";
-                else if (isLive) accountType = "live";
+                var name = String(acct.accountName || acct.name || acct.login || acct.id || "").toLowerCase();
+                if (name.indexOf("dem") === 0 || name.indexOf("demo") >= 0 || acct.isDemo === true) {
+                    accountType = "demo";
+                } else if (name.indexOf("ecn") === 0 || name.indexOf("live") === 0 ||
+                           name.indexOf("real") === 0 || acct.isDemo === false) {
+                    accountType = "live";
+                }
             }
         } catch(e) { return; }
 
@@ -142,345 +122,337 @@ class MyIndicator extends UserDefinedIndicator {
         var p        = this.$lastParams || {};
 
         this.sendHTMLMessage({
-            acctName:     p.accountName || "Profit Stats",
-            accent:       p.accentColor || "#3ddc84",
-            balance:      this._fmt(balance, currency),
-            floating:     this._pnl(floating, currency),
-            floatingRaw:  floating,
-            total:        this._pnl(total, currency),
-            totalRaw:     total,
-            accountType:  accountType
+            acctName:    p.accountName || "Profit Stats",
+            accent:      p.accentColor || "#3ddc84",
+            balance:     currency + this._num(balance),
+            floating:    this._pnl(floating, currency),
+            floatingRaw: floating,
+            total:       this._pnl(total, currency),
+            totalRaw:    total,
+            accountType: accountType
         });
     }
 
     _buildCard() {
         var html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
+<html>
+<head>
+<meta charset="utf-8">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-* { box-sizing:border-box; margin:0; padding:0; }
-html,body { width:100%; overflow:hidden; background:transparent; }
-body { font-family:'Inter',sans-serif; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: 'Inter', sans-serif;
+  /* Let all clicks/scroll/zoom pass through to chart below */
+  pointer-events: none;
+}
+/* Only the card itself captures mouse events */
+#card { pointer-events: all; }
 
-/* ── Card ── */
+/* Card is absolutely positioned and moves via JS */
 #card {
-  width: 240px;
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 234px;
   background: #12151e;
-  border: 1px solid rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.75);
+  user-select: none;
 }
-#card.mini { border-radius: 28px; width: 200px; }
+#card.mini {
+  border-radius: 28px;
+  width: 190px;
+}
 
-/* ── Drag bar ── */
+/* Accent top bar */
+.abar { height: 3px; width: 100%; background: #3ddc84; }
+
+/* Drag handle */
 #dbar {
-  height: 24px;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 14px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
   cursor: grab;
-  background: rgba(255,255,255,0.02);
+  background: rgba(255,255,255,0.025);
 }
 #dbar:active { cursor: grabbing; }
-.ddots { display:flex; gap:3px; }
-.ddot  { width:3px; height:3px; border-radius:50%; background:rgba(255,255,255,0.10); }
-.ibtn  {
-  background: transparent; border: none;
-  color: rgba(255,255,255,0.3); font-size:13px;
-  cursor:pointer; padding: 0 4px; line-height:1;
+.dots { display: flex; gap: 3px; }
+.dot  { width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,0.12); }
+.mbtn {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.35);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
   font-family: inherit;
 }
-.ibtn:hover { color: rgba(255,255,255,0.6); }
+.mbtn:hover { color: rgba(255,255,255,0.7); }
 
-/* ── Mini mode ── */
+/* Mini bar */
 #minibar {
-  display: none; padding: 10px 16px;
-  align-items: center; justify-content: space-between;
+  display: none;
+  padding: 9px 14px;
+  align-items: center;
+  justify-content: space-between;
 }
-.mini-num { font-size:17px; font-weight:800; }
-.mini-num.pos { color:#3ddc84; }
-.mini-num.neg { color:#ff5252; }
-.mini-num.neu { color:rgba(255,255,255,0.45); }
+.mini-val { font-size: 16px; font-weight: 800; }
+.mini-val.pos { color: #3ddc84; }
+.mini-val.neg { color: #ff5252; }
+.mini-val.neu { color: rgba(255,255,255,0.5); }
 
-/* ── Full content ── */
-#content { padding: 14px 16px 16px; display:flex; flex-direction:column; gap:10px; }
+/* Full content */
+#cnt { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
 
-/* ── Top row: name + badge ── */
-.top-row {
-  display: flex; align-items: center; justify-content: space-between;
-}
-.acct-name {
-  font-size: 11px; font-weight: 700;
-  letter-spacing: 1.5px; text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
-}
-.badge {
-  display: flex; align-items: center; gap: 6px;
+/* Top row */
+.toprow { display: flex; align-items: center; justify-content: space-between; }
+.aname  { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255,255,255,0.4); }
+.badge  {
+  display: flex; align-items: center; gap: 5px;
+  border-radius: 20px; padding: 3px 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  border: 1px solid rgba(61,220,132,0.35);
   background: rgba(61,220,132,0.1);
-  border: 1px solid rgba(61,220,132,0.3);
-  border-radius: 20px;
-  padding: 3px 10px;
-  font-size: 10px; font-weight: 700;
-  letter-spacing: 0.5px;
   color: #3ddc84;
 }
-.badge.custom { color: var(--ac); border-color: rgba(var(--acr),0.3); background:rgba(var(--acr),0.1); }
 .pdot {
   width: 7px; height: 7px; border-radius: 50%;
   background: #3ddc84;
   box-shadow: 0 0 5px #3ddc84;
   animation: pulse 2s infinite;
 }
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.2}}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
 
-/* ── Block ── */
-.block {
+/* Blocks */
+.blk {
   background: rgba(255,255,255,0.04);
-  border-radius: 10px;
-  padding: 12px 14px;
   border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 10px;
+  padding: 11px 13px;
 }
-
-.blk-label {
+.blk-lbl {
   font-size: 9px; font-weight: 700;
-  letter-spacing: 1.5px; text-transform: uppercase;
+  letter-spacing: 1.4px; text-transform: uppercase;
   color: rgba(255,255,255,0.25);
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
-
-/* Balance */
-.bal-num {
-  font-size: 22px; font-weight: 800;
-  color: #ffffff;
-  letter-spacing: -0.5px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* P&L big */
-.pnl-num {
-  font-size: 30px; font-weight: 900;
-  letter-spacing: -1px; line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-.pnl-num.pos { color: #3ddc84; }
-.pnl-num.neg { color: #ff5252; }
-.pnl-num.neu { color: rgba(255,255,255,0.4); }
-
-/* Floating */
-.flt-num {
-  font-size: 24px; font-weight: 800;
-  letter-spacing: -0.8px; line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-.flt-num.pos { color: #3ddc84; }
-.flt-num.neg { color: #ff5252; }
-.flt-num.neu { color: rgba(255,255,255,0.4); }
+.bal-val { font-size: 20px; font-weight: 800; color: #fff; letter-spacing: -0.3px; }
+.pnl-val { font-size: 28px; font-weight: 900; letter-spacing: -1px; line-height: 1; }
+.pnl-val.pos { color: #3ddc84; }
+.pnl-val.neg { color: #ff5252; }
+.pnl-val.neu { color: rgba(255,255,255,0.4); }
+.flt-val { font-size: 22px; font-weight: 800; letter-spacing: -0.8px; line-height: 1; }
+.flt-val.pos { color: #3ddc84; }
+.flt-val.neg { color: #ff5252; }
+.flt-val.neu { color: rgba(255,255,255,0.4); }
 </style>
 </head>
 <body>
 
 <div id="card">
-  <!-- Drag bar -->
+  <div class="abar" id="abar"></div>
   <div id="dbar">
-    <div class="ddots">
-      <div class="ddot"></div><div class="ddot"></div>
-      <div class="ddot"></div><div class="ddot"></div>
-      <div class="ddot"></div>
+    <div class="dots">
+      <div class="dot"></div><div class="dot"></div>
+      <div class="dot"></div><div class="dot"></div>
     </div>
-    <button class="ibtn" onclick="toggleMin()" id="mbtn">—</button>
+    <button class="mbtn" id="mbtn" onclick="toggleMin()">—</button>
   </div>
 
-  <!-- Mini pill -->
   <div id="minibar">
-    <div style="display:flex;align-items:center;gap:8px">
+    <div style="display:flex;align-items:center;gap:7px">
       <span class="pdot"></span>
-      <span class="mini-num neu" id="mini-num">$0.00</span>
+      <span class="mini-val neu" id="mini-v">$0.00</span>
     </div>
-    <button class="ibtn" onclick="toggleMin()">＋</button>
+    <button class="mbtn" onclick="toggleMin()">＋</button>
   </div>
 
-  <!-- Full content -->
-  <div id="content">
-
-    <!-- Account name + Active badge -->
-    <div class="top-row">
-      <span class="acct-name" id="acct-name">PROFIT STATS</span>
+  <div id="cnt">
+    <div class="toprow">
+      <span class="aname" id="aname">PROFIT STATS</span>
       <div class="badge" id="badge">
         <span class="pdot" id="bdot"></span>
-        <span id="btext">ACTIVE</span>
+        <span id="btxt">ACTIVE</span>
       </div>
     </div>
 
-    <!-- Balance block -->
-    <div class="block">
-      <div class="blk-label">Balance</div>
-      <div class="bal-num" id="balance">$0.00</div>
+    <div class="blk">
+      <div class="blk-lbl">Balance</div>
+      <div class="bal-val" id="bal">$0.00</div>
     </div>
 
-    <!-- Today's P&L block -->
-    <div class="block">
-      <div class="blk-label">Today's P&amp;L</div>
-      <div class="pnl-num neu" id="total">$0.00</div>
+    <div class="blk">
+      <div class="blk-lbl">Today's P&amp;L</div>
+      <div class="pnl-val neu" id="pnl">$0.00</div>
     </div>
 
-    <!-- Floating P&L block -->
-    <div class="block">
-      <div class="blk-label">Floating P&amp;L</div>
-      <div class="flt-num neu" id="floating">$0.00</div>
+    <div class="blk">
+      <div class="blk-lbl">Floating P&amp;L</div>
+      <div class="flt-val neu" id="flt">$0.00</div>
     </div>
-
   </div>
 </div>
 
 <script>
-// ── Accent color helpers ───────────────────────────────────
-function hexToRgb(hex) {
-  hex = hex.replace('#','');
-  if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
-  var r = parseInt(hex.slice(0,2),16);
-  var g = parseInt(hex.slice(2,4),16);
-  var b = parseInt(hex.slice(4,6),16);
-  return r+','+g+','+b;
-}
-
-function setAccent(color) {
-  document.documentElement.style.setProperty('--ac', color);
-  document.documentElement.style.setProperty('--acr', hexToRgb(color||'#3ddc84'));
-  // Update pulse dot color
-  var dots = document.querySelectorAll('.pdot');
-  dots.forEach(function(d){
-    d.style.background  = color;
-    d.style.boxShadow   = '0 0 6px ' + color;
-  });
-  // Update badge
-  var badge = document.getElementById('badge');
-  badge.style.color       = color;
-  badge.style.borderColor = color;
-  badge.style.background  = 'rgba(' + hexToRgb(color) + ',0.10)';
-}
-
-setAccent('#3ddc84');
+var card  = document.getElementById('card');
+var isMin = false;
 
 // ── Minimize ──────────────────────────────────────────────
-var isMin = false;
 function toggleMin() {
   isMin = !isMin;
-  document.getElementById('content').style.display  = isMin ? 'none' : 'flex';
-  document.getElementById('minibar').style.display   = isMin ? 'flex' : 'none';
-  document.getElementById('card').className           = isMin ? 'mini' : '';
-  document.getElementById('mbtn').textContent         = isMin ? '＋' : '—';
+  document.getElementById('cnt').style.display     = isMin ? 'none' : 'flex';
+  document.getElementById('minibar').style.display = isMin ? 'flex' : 'none';
+  document.getElementById('mbtn').textContent      = isMin ? '＋' : '—';
+  card.className = isMin ? 'mini' : '';
 }
 
 // ── Drag ──────────────────────────────────────────────────
-var drag = false, sx = 0, sy = 0;
-var dbar = document.getElementById('dbar');
+var dragging = false;
+var startX, startY, startL, startT;
 
-dbar.addEventListener('mousedown', function(e) {
-  if (e.target.classList.contains('ibtn')) return;
-  drag = true; sx = e.screenX; sy = e.screenY;
+document.getElementById('dbar').addEventListener('mousedown', function(e) {
+  if (e.target.tagName === 'BUTTON') return;
+  dragging = true;
+  startX = e.clientX;
+  startY = e.clientY;
+  var r  = card.getBoundingClientRect();
+  startL = r.left;
+  startT = r.top;
+  // Switch from right to left positioning on first drag
+  card.style.right = 'auto';
+  card.style.left  = startL + 'px';
+  card.style.top   = startT + 'px';
   e.preventDefault();
 });
+
 document.addEventListener('mousemove', function(e) {
-  if (!drag) return;
-  var dx = e.screenX - sx, dy = e.screenY - sy;
-  sx = e.screenX; sy = e.screenY;
-  window.parent.postMessage({
-    action:'move', dx:dx, dy:dy,
-    chartW: window.innerWidth
-  }, '*');
+  if (!dragging) return;
+  var x = startL + (e.clientX - startX);
+  var y = startT + (e.clientY - startY);
+  card.style.left = Math.max(0, x) + 'px';
+  card.style.top  = Math.max(0, y) + 'px';
 });
-document.addEventListener('mouseup', function() { drag = false; });
 
-dbar.addEventListener('touchstart', function(e) {
-  if (e.target.classList.contains('ibtn')) return;
-  var t = e.touches[0]; drag = true; sx = t.clientX; sy = t.clientY;
+document.addEventListener('mouseup', function() {
+  dragging = false;
+});
+
+// Touch drag
+document.getElementById('dbar').addEventListener('touchstart', function(e) {
+  if (e.target.tagName === 'BUTTON') return;
+  dragging = true;
+  var t  = e.touches[0];
+  startX = t.clientX;
+  startY = t.clientY;
+  var r  = card.getBoundingClientRect();
+  startL = r.left;
+  startT = r.top;
+  card.style.right = 'auto';
+  card.style.left  = startL + 'px';
+  card.style.top   = startT + 'px';
   e.preventDefault();
-}, {passive:false});
+}, { passive: false });
+
 document.addEventListener('touchmove', function(e) {
-  if (!drag) return;
+  if (!dragging) return;
   var t = e.touches[0];
-  var dx = t.clientX - sx, dy = t.clientY - sy;
-  sx = t.clientX; sy = t.clientY;
-  window.parent.postMessage({
-    action:'move', dx:dx, dy:dy,
-    chartW: window.innerWidth
-  }, '*');
-}, {passive:true});
-document.addEventListener('touchend', function() { drag = false; });
+  var x = startL + (t.clientX - startX);
+  var y = startT + (t.clientY - startY);
+  card.style.left = Math.max(0, x) + 'px';
+  card.style.top  = Math.max(0, y) + 'px';
+}, { passive: true });
+
+document.addEventListener('touchend', function() { dragging = false; });
 
 // ── Helpers ───────────────────────────────────────────────
 function cls(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'; }
 
-// ── Messages ──────────────────────────────────────────────
+function hexRgb(h) {
+  h = h.replace('#','');
+  if (h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  return parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16);
+}
+
+// ── Messages from UDI ─────────────────────────────────────
 window.addEventListener('message', function(e) {
-  var d = e.data; if (!d) return;
+  var d = e.data;
+  if (!d) return;
 
-  if (d.accent) setAccent(d.accent);
+  if (d.accent) {
+    var rgb = hexRgb(d.accent);
+    document.getElementById('abar').style.background = d.accent;
+    var bdot  = document.getElementById('bdot');
+    var badge = document.getElementById('badge');
+    bdot.style.background  = d.accent;
+    bdot.style.boxShadow   = '0 0 5px ' + d.accent;
+    badge.style.color      = d.accent;
+    badge.style.borderColor= 'rgba('+rgb+',0.35)';
+    badge.style.background = 'rgba('+rgb+',0.10)';
+  }
 
-  if (d.acctName) {
-    document.getElementById('acct-name').textContent = d.acctName.toUpperCase();
-  }
-  if (d.balance) {
-    document.getElementById('balance').textContent = d.balance;
-  }
+  if (d.acctName) document.getElementById('aname').textContent = d.acctName.toUpperCase();
+  if (d.balance)  document.getElementById('bal').textContent   = d.balance;
+
   if (d.total !== undefined) {
-    var el = document.getElementById('total');
-    el.textContent = d.total;
-    el.className   = 'pnl-num ' + cls(d.totalRaw || 0);
-    var mn = document.getElementById('mini-num');
-    mn.textContent = d.total;
-    mn.className   = 'mini-num ' + cls(d.totalRaw || 0);
+    var p = document.getElementById('pnl');
+    p.textContent = d.total;
+    p.className   = 'pnl-val ' + cls(d.totalRaw||0);
+    var mv = document.getElementById('mini-v');
+    mv.textContent = d.total;
+    mv.className   = 'mini-val ' + cls(d.totalRaw||0);
   }
   if (d.floating !== undefined) {
-    var fl = document.getElementById('floating');
-    fl.textContent = d.floating;
-    fl.className   = 'flt-num ' + cls(d.floatingRaw || 0);
+    var f = document.getElementById('flt');
+    f.textContent = d.floating;
+    f.className   = 'flt-val ' + cls(d.floatingRaw||0);
   }
 
-  // Account type badge: demo = orange, live = green, active = teal
-  if (d.accountType !== undefined) {
-    var badge = document.getElementById('badge');
-    var bdot  = document.getElementById('bdot');
-    var btext = document.getElementById('btext');
-    var color, label;
-
-    if (d.accountType === 'demo') {
-      color = '#f59e0b'; label = 'DEMO';
-    } else if (d.accountType === 'live') {
-      color = '#3ddc84'; label = 'LIVE';
-    } else {
-      color = '#3ddc84'; label = 'ACTIVE';
-    }
-
-    btext.textContent         = label;
-    bdot.style.background     = color;
-    bdot.style.boxShadow      = '0 0 6px ' + color;
-    badge.style.color         = color;
-    badge.style.borderColor   = 'rgba(' + hexToRgb(color) + ',0.4)';
-    badge.style.background    = 'rgba(' + hexToRgb(color) + ',0.10)';
+  if (d.accountType) {
+    var btxt  = document.getElementById('btxt');
+    var bdot2 = document.getElementById('bdot');
+    var badge2= document.getElementById('badge');
+    var col, lbl;
+    if      (d.accountType==='demo') { col='#f59e0b'; lbl='DEMO'; }
+    else if (d.accountType==='live') { col='#3ddc84'; lbl='LIVE'; }
+    else                              { col='#3ddc84'; lbl='ACTIVE'; }
+    btxt.textContent        = lbl;
+    bdot2.style.background  = col;
+    bdot2.style.boxShadow   = '0 0 5px '+col;
+    badge2.style.color      = col;
+    badge2.style.borderColor= col;
+    badge2.style.background = 'rgba('+hexRgb(col)+',0.10)';
   }
 });
 </script>
-</body></html>`;
+</body>
+</html>`;
 
         this.createHTML({
             foreground: true,
             style: {
-                width:  "260px",
-                height: "360px",
-                right:  "14px",
-                top:    "14px"   /* initial — switches to left on first drag */
+                width:  "100%",
+                height: "100%",
+                left:   "0",
+                top:    "0"
             },
             html: html
         });
     }
 
-    _fmt(v, cur) {
-        var n = parseFloat(v) || 0;
-        return (cur||"$") + n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+    _num(v) {
+        return (parseFloat(v)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
     }
     _pnl(v, cur) {
-        var n = parseFloat(v) || 0;
+        var n = parseFloat(v)||0;
         var a = Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
         if (n > 0) return "+" + (cur||"$") + a;
         if (n < 0) return "-" + (cur||"$") + a;
