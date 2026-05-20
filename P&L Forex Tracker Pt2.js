@@ -299,12 +299,31 @@ html, body {
       <div class="blk-lbl">Floating P&amp;L</div>
       <div class="flt-val neu" id="flt">$0.00</div>
     </div>
+
+    <!-- Date footer -->
+    <div style="margin-top:4px;padding:8px 0 2px;border-top:1px solid rgba(255,255,255,0.06);text-align:center;">
+      <span style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.30);" id="card-date"></span>
+    </div>
+
   </div>
 </div>
 
 <script>
 var card  = document.getElementById('card');
 var isMin = false;
+
+// ── Date — updates automatically each day ─────────────────
+function updateDate() {
+  var now = new Date();
+  var days   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var str = days[now.getDay()] + ', ' + months[now.getMonth()] + ' ' + now.getDate() + ' ' + now.getFullYear();
+  var el = document.getElementById('card-date');
+  if (el) el.textContent = str;
+}
+updateDate();
+// Refresh date at midnight
+setInterval(updateDate, 60000);
 
 // ── Minimize ──────────────────────────────────────────────
 function toggleMin() {
