@@ -21,13 +21,13 @@ class MyIndicator extends UserDefinedIndicator {
 
     onInit(data) {
         this.$htmlCreated    = false;
-        this.$openingBalance = null;  // balance at start of day — set once
         this.$todayDateStr   = new Date().toISOString().slice(0, 10);
-        this.$histLoaded     = true;  // not using history — always ready
+        this.$histLoaded     = true;
         this.$currency       = "$";
+        this.$openingBalance = null;
+        this.$waitingForRestore = true;  // wait for HTML to send back saved value
 
         var self = this;
-        // Tick every second — all P&L calculated from balance delta
         setInterval(function() { self._tick(); }, 1000);
 
         return {
@@ -41,6 +41,23 @@ class MyIndicator extends UserDefinedIndicator {
     onContextChange(data) {}
     onParameterChange(data) {}
 
+    onHTMLMessage(msg) {
+        if (!msg) return;
+        // Panel sends back the saved opening balance on load
+        if (msg.action === "restoreBalance" && msg.balance > 0) {
+            var today = new Date().toISOString().slice(0, 10);
+            if (msg.date === today) {
+                // Restore — this survives logout/refresh/sleep
+                this.$openingBalance    = msg.balance;
+                this.$waitingForRestore = false;
+            }
+        }
+        if (msg.action === "ready") {
+            // Panel loaded — stop waiting even if no saved value
+            this.$waitingForRestore = false;
+        }
+    }
+
     onCalculate(data, output) {
         if (!this.$htmlCreated) {
             this.$htmlCreated = true;
@@ -50,12 +67,15 @@ class MyIndicator extends UserDefinedIndicator {
         var todayStr = new Date().toISOString().slice(0, 10);
         if (todayStr !== this.$todayDateStr) {
             this.$todayDateStr   = todayStr;
-            this.$openingBalance = null;  // will be set on next tick
+            this.$openingBalance = null;
+            this.$waitingForRestore = false;
+            this.sendHTMLMessage({clearBalance: true});
         }
     }
 
     _tick() {
         if (!this.$htmlCreated) return;
+        if (this.$waitingForRestore) return;  // wait for panel to send saved balance
 
         var balance  = 0;
         var floating = 0;
@@ -73,6 +93,12 @@ class MyIndicator extends UserDefinedIndicator {
 
         if (this.$openingBalance === null && balance > 0) {
             this.$openingBalance = balance - floating;
+            // Send to panel to save — panel uses sessionStorage + window.name
+            // both of which survive soft reloads and sleep mode
+            this.sendHTMLMessage({
+                saveBalance: this.$openingBalance,
+                saveDate:    this.$todayDateStr
+            });
         }
 
         if (this.$openingBalance === null) return;
@@ -248,6 +274,88 @@ body {
 <script>
 var isMin = false;
 
+// ── Persistent balance storage ────────────────────────────
+// Uses THREE methods so at least one always survives:
+// 1. sessionStorage  — survives page refresh
+// 2. window.name     — survives navigation/reload
+// 3. cookie          — survives logout and sleep
+
+var SAVE_KEY = "pnlcard_ob_v2";
+
+function saveBalance(balance, date) {
+  var val = JSON.stringify({b: balance, d: date});
+  // Method 1: sessionStorage
+  try { sessionStorage.setItem(SAVE_KEY, val); } catch(e) {}
+  // Method 2: window.name (survives page reload)
+  try {
+    var wn = {};
+    try { wn = JSON.parse(window.name) || {}; } catch(e2) {}
+    wn[SAVE_KEY] = val;
+    window.name = JSON.stringify(wn);
+  } catch(e) {}
+  // Method 3: document.cookie (survives logout)
+  try {
+    var exp = new Date();
+    exp.setHours(23, 59, 59, 999);
+    document.cookie = SAVE_KEY + "=" + encodeURIComponent(val)
+        + "; expires=" + exp.toUTCString() + "; path=/; SameSite=Lax";
+  } catch(e) {}
+}
+
+function loadBalance() {
+  var val = null;
+  // Try sessionStorage first
+  try { val = sessionStorage.getItem(SAVE_KEY); } catch(e) {}
+  // Try window.name
+  if (!val) {
+    try {
+      var wn = JSON.parse(window.name) || {};
+      val = wn[SAVE_KEY] || null;
+    } catch(e) {}
+  }
+  // Try cookie
+  if (!val) {
+    try {
+      var cookies = document.cookie.split(";");
+      for (var i = 0; i < cookies.length; i++) {
+        var c = cookies[i].trim();
+        if (c.indexOf(SAVE_KEY + "=") === 0) {
+          val = decodeURIComponent(c.substring(SAVE_KEY.length + 1));
+          break;
+        }
+      }
+    } catch(e) {}
+  }
+  if (!val) return null;
+  try { return JSON.parse(val); } catch(e) { return null; }
+}
+
+function clearBalance() {
+  try { sessionStorage.removeItem(SAVE_KEY); } catch(e) {}
+  try {
+    var wn = {};
+    try { wn = JSON.parse(window.name) || {}; } catch(e2) {}
+    delete wn[SAVE_KEY];
+    window.name = JSON.stringify(wn);
+  } catch(e) {}
+  try {
+    document.cookie = SAVE_KEY + "=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+  } catch(e) {}
+}
+
+// On load — try to restore saved balance and send it to the indicator
+(function() {
+  var today = new Date().toISOString().slice(0, 10);
+  var saved = loadBalance();
+  if (saved && saved.b > 0 && saved.d === today) {
+    // Send saved balance back to indicator
+    window.parent.postMessage({action: "restoreBalance", balance: saved.b, date: saved.d}, "*");
+  } else {
+    // Nothing saved — tell indicator we're ready
+    window.parent.postMessage({action: "ready"}, "*");
+  }
+})();
+
 // ── Date ──────────────────────────────────────────────────
 function updateDate() {
   var now    = new Date();
@@ -280,6 +388,14 @@ function cls(val) { return val > 0 ? 'pos' : val < 0 ? 'neg' : 'neu'; }
 
 window.addEventListener('message', function(e) {
   var d = e.data; if (!d) return;
+
+  // Save/clear balance commands from indicator
+  if (d.saveBalance !== undefined && d.saveBalance > 0) {
+    saveBalance(d.saveBalance, d.saveDate);
+  }
+  if (d.clearBalance) {
+    clearBalance();
+  }
 
   if (d.balance !== undefined) {
     document.getElementById('balance').textContent = d.balance;
