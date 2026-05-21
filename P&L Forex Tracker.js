@@ -25,7 +25,8 @@ class MyIndicator extends UserDefinedIndicator {
         this.$histLoaded     = true;
         this.$currency       = "$";
         this.$openingBalance = null;
-        this.$waitingForRestore = true;  // wait for HTML to send back saved value
+        this.$waitingForRestore = true;
+        this.$pendingReset = false;  // set true to reset on next tick
 
         var self = this;
         setInterval(function() { self._tick(); }, 1000);
@@ -39,21 +40,34 @@ class MyIndicator extends UserDefinedIndicator {
     }
 
     onContextChange(data) {}
-    onParameterChange(data) {}
+    onParameterChange(data) {
+        var p = data.parameters;
+        var doReset = p.resetPnL === true || p.resetPnL === "true" || p.resetPnL === 1;
+        if (doReset) {
+            // Set flag — _tick will handle it on next second
+            // (safer than calling sendHTMLMessage here which may not be ready)
+            this.$pendingReset = true;
+        }
+    }
 
     onHTMLMessage(msg) {
         if (!msg) return;
-        // Panel sends back the saved opening balance on load
+        // User clicked RESET button on the card
+        if (msg.action === "resetBalance") {
+            this.$openingBalance    = null;
+            this.$waitingForRestore = false;
+            // _tick will set a fresh openingBalance on next second
+            return;
+        }
+        // Panel sends back saved opening balance on load
         if (msg.action === "restoreBalance" && msg.balance > 0) {
             var today = new Date().toISOString().slice(0, 10);
             if (msg.date === today) {
-                // Restore — this survives logout/refresh/sleep
                 this.$openingBalance    = msg.balance;
                 this.$waitingForRestore = false;
             }
         }
         if (msg.action === "ready") {
-            // Panel loaded — stop waiting even if no saved value
             this.$waitingForRestore = false;
         }
     }
@@ -63,6 +77,7 @@ class MyIndicator extends UserDefinedIndicator {
             this.$htmlCreated = true;
             this._buildCard();
         }
+
         // Reset opening balance on new calendar day
         var todayStr = new Date().toISOString().slice(0, 10);
         if (todayStr !== this.$todayDateStr) {
@@ -75,7 +90,30 @@ class MyIndicator extends UserDefinedIndicator {
 
     _tick() {
         if (!this.$htmlCreated) return;
-        if (this.$waitingForRestore) return;  // wait for panel to send saved balance
+
+        // Handle pending manual reset
+        if (this.$pendingReset) {
+            this.$pendingReset      = false;
+            this.$openingBalance    = null;
+            this.$waitingForRestore = false;
+            // Clear all saved storage in the panel
+            this.sendHTMLMessage({clearBalance: true});
+            // Show zeros immediately
+            var cur = this.$currency || "$";
+            this.sendHTMLMessage({
+                balance:     cur + "0.00",
+                realised:    cur + "0.00",
+                floating:    cur + "0.00",
+                total:       cur + "0.00",
+                totalRaw:    0,
+                realisedRaw: 0,
+                floatingRaw: 0,
+                loading:     false
+            });
+            return;
+        }
+
+        if (this.$waitingForRestore) return;
 
         var balance  = 0;
         var floating = 0;
@@ -165,6 +203,27 @@ body {
   padding: 2px 7px; line-height: 1.4; transition: background 0.2s;
 }
 .minimize-btn:hover { background: rgba(255,255,255,0.12); }
+.reset-bar {
+  margin: 0 -20px -14px -20px;
+  padding: 9px 20px;
+  background: rgba(59,130,246,0.08);
+  border-top: 1px solid rgba(59,130,246,0.18);
+  border-radius: 0 0 18px 18px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s;
+  gap: 6px;
+}
+.reset-bar:hover { background: rgba(59,130,246,0.16); }
+.reset-bar-icon {
+  font-size: 11px;
+  color: rgba(255,255,255,0.25);
+}
+.reset-bar-txt {
+  font-size: 9px; font-weight: 600;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.25);
+}
 .big-pnl {
   font-size: 28px; font-weight: 800; letter-spacing: -1px;
   line-height: 1.1; margin: 6px 0 2px; transition: color 0.4s;
@@ -255,6 +314,11 @@ body {
 
     <div class="date-footer">
       <span class="date-txt" id="card-date"></span>
+    </div>
+
+    <div class="reset-bar" onclick="doReset()">
+      <span class="reset-bar-icon">↺</span>
+      <span class="reset-bar-txt">Reset Today's P&amp;L</span>
     </div>
   </div>
 
@@ -367,6 +431,24 @@ function updateDate() {
 }
 updateDate();
 setInterval(updateDate, 60000);
+
+function doReset() {
+  // Clear all saved storage immediately
+  clearBalance();
+  // Reset all displays to zero
+  var pnlEl = document.getElementById('big-pnl');
+  if (pnlEl) { pnlEl.textContent = '$0.00'; pnlEl.className = 'big-pnl neu'; }
+  var miniEl = document.getElementById('mini-pnl');
+  if (miniEl) { miniEl.textContent = '$0.00'; miniEl.className = 'mini-pnl neu'; }
+  var rEl = document.getElementById('realised');
+  if (rEl) { rEl.textContent = '$0.00'; rEl.className = 'stat-val neu'; }
+  var fEl = document.getElementById('floating');
+  if (fEl) { fEl.textContent = '$0.00'; fEl.className = 'stat-val neu'; }
+  var bar = document.getElementById('bar');
+  if (bar) { bar.style.width = '0%'; bar.className = 'bar-fill'; }
+  // Tell the indicator to wipe its openingBalance
+  window.parent.postMessage({action: 'resetBalance'}, '*');
+}
 
 function toggleMin() {
   isMin = !isMin;
