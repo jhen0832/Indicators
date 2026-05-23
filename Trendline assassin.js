@@ -1,5 +1,5 @@
 /* ================================================================
-   Liquid Charts Pro — Index Pro (Trendline Signals)
+   Liquid Charts Pro — Trendline assassin (Trendline Signals)
    ================================================================
    INSTALL:
    1. Open Liquid Charts Pro → open any chart
