@@ -44,7 +44,7 @@ class MyIndicator extends UserDefinedIndicator {
         this.$touchedTLs   = {};
 
         return {
-            caption:   "Index Pro",
+            caption:   "Trendline Assassin",
             isOverlay: true,
             plots:     [],
 
