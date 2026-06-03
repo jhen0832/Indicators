@@ -110,7 +110,8 @@ class MyIndicator extends UserDefinedIndicator {
             this.$higherStore   = this.$candleStore.Aggregate(periodSecs);
 
             this.$higherStore.OnLoad = function() {
-                self.$lastRedrawKey = null; // new data — force redraw
+                // Only force redraw if we have enough candles
+                // Don't reset key here — let _redrawIfChanged detect changes
                 self._redrawIfChanged();
             };
 
@@ -121,11 +122,16 @@ class MyIndicator extends UserDefinedIndicator {
                 // intentionally empty — no redraw on live ticks
             };
 
-            this._redrawIfChanged();
+            // Only draw on initial load, not on live ticks
+            if (!data.currentBarUpdateOnly) {
+                this._redrawIfChanged();
+            }
 
         } else {
             this.$higherStore.LoadData(data);
-            if (this.$higherStore.length >= 2) {
+            // Skip redraw on live bar ticks — pivot levels only change
+            // when a new higher-TF bar closes, not on every price tick
+            if (!data.currentBarUpdateOnly && this.$higherStore.length >= 2) {
                 this._redrawIfChanged();
             }
         }
