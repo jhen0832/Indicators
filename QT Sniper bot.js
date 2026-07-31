@@ -387,6 +387,14 @@ var pendingOrder = false;       // guards against overlapping SendOrder calls
 var entriesToday = 0;
 var entriesDayKey = "";
 
+// Real order objects report the platform's canonical instrument ID (e.g. "GBP/JPY"), which can
+// differ from the raw text typed into the Instrument field (e.g. "GBPJPY"). Checking both here
+// is what makes order matching work regardless of which form the account actually uses.
+function isBotInstrument(orderInstrumentId) {
+  if (!cfg || !orderInstrumentId) return false;
+  return orderInstrumentId === cfg.instrumentId || orderInstrumentId === cfg.canonicalInstrumentId;
+}
+
 function currentDayKey() {
   var d = new Date();
   return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
@@ -426,18 +434,28 @@ function isInNewsBlackout() {
 // (whichever comes first), so a limit doesn't sit breached for up to a whole bar period
 // before the bot notices — the whole point of this is reacting promptly while nobody's
 // watching the screen.
-var dailyStartEquity = null;
 var dailyBreakerDayKey = "";
 var circuitBreakerTripped = false;
 
 // ---- Force-close queue — used by the circuit breaker so a failed close attempt is retried
 // until it genuinely succeeds, instead of being logged once and abandoned. This matters most
 // for exactly the "I'm not at my computer" scenario the circuit breaker exists for.
-var forceCloseQueue = {}; // orderId -> { attempts }
+//
+// IMPORTANT: this is retried both on bar close AND on every real-time account update, and the
+// latter can fire many times per second. Without the backoff below, a persistently-rejected
+// close (e.g. broker says "not enough working quantity") would retry on nearly every single
+// tick — flooding SendOrder, and if "Confirm every order" is on, popping a confirmation dialog
+// dozens of times a second. The cooldown below is what stops that.
+var forceCloseQueue = {}; // orderId -> { attempts, nextRetryAt }
+var FORCE_CLOSE_MIN_INTERVAL_MS = 4000; // never retry the same order more than once per ~4s
 
 function attemptForceCloses() {
+  var now = Date.now();
   var ids = Object.keys(forceCloseQueue);
   ids.forEach(function (orderId) {
+    var entry = forceCloseQueue[orderId];
+    if (entry.nextRetryAt && now < entry.nextRetryAt) return; // still cooling down from the last attempt
+
     var order = Framework.Orders.get(orderId);
     if (!order || order.closeTime) {
       // Already closed (by this attempt succeeding earlier, hitting its own SL/TP, or manually) — done.
@@ -445,8 +463,8 @@ function attemptForceCloses() {
       return;
     }
 
-    var entry = forceCloseQueue[orderId];
     entry.attempts++;
+    entry.nextRetryAt = now + Math.min(FORCE_CLOSE_MIN_INTERVAL_MS * entry.attempts, 30000); // back off further each failure, capped at 30s
 
     Framework.SendOrder({
       instrumentId: order.instrumentId,
@@ -468,26 +486,41 @@ function attemptForceCloses() {
 }
 
 
+// Computes THIS bot instance's own profit/loss for today — today's closed trades (from
+// tradeLog) plus whatever's currently floating on trades it still has open. Deliberately does
+// NOT use whole-account equity: if you run multiple pairs in separate windows, each one's daily
+// circuit breaker needs to react to what THAT pair's trades did, not to profit or loss coming
+// from a completely different instance or a manual trade elsewhere on the same account.
+function computeBotDailyPL() {
+  var todayKey = currentDayKey();
+  var pl = 0;
+  tradeLog.forEach(function (t) {
+    if (t.dayKey === todayKey && typeof t.profit === "number") pl += t.profit;
+  });
+  Object.keys(managedOrders).forEach(function (orderId) {
+    var order = Framework.Orders.get(orderId);
+    if (order && !order.closeTime && typeof order.profit === "number") pl += order.profit;
+  });
+  return pl;
+}
+
 function checkDailyCircuitBreaker() {
   if (!isRunning || circuitBreakerTripped) return;
   if (!cfg || (cfg.dailyProfitTarget <= 0 && cfg.dailyMaxLoss <= 0)) return;
-  if (!Framework.Account || typeof Framework.Account.equity !== "number") return;
 
   var dk = currentDayKey();
   if (dk !== dailyBreakerDayKey) {
-    // New day — re-arm automatically, using equity right now as the new baseline.
+    // New day — re-arm automatically.
     dailyBreakerDayKey = dk;
-    dailyStartEquity = Framework.Account.equity;
     circuitBreakerTripped = false;
   }
-  if (dailyStartEquity === null) dailyStartEquity = Framework.Account.equity;
 
-  var dailyPL = Framework.Account.equity - dailyStartEquity;
+  var dailyPL = computeBotDailyPL();
 
   if (cfg.dailyProfitTarget > 0 && dailyPL >= cfg.dailyProfitTarget) {
-    tripCircuitBreaker("profit target reached (+$" + dailyPL.toFixed(2) + ")");
+    tripCircuitBreaker("this instrument's trades reached the profit target (+$" + dailyPL.toFixed(2) + ")");
   } else if (cfg.dailyMaxLoss > 0 && dailyPL <= -cfg.dailyMaxLoss) {
-    tripCircuitBreaker("max daily loss reached (-$" + Math.abs(dailyPL).toFixed(2) + ")");
+    tripCircuitBreaker("this instrument's trades reached the max daily loss (-$" + Math.abs(dailyPL).toFixed(2) + ")");
   }
 }
 
@@ -762,7 +795,7 @@ var BOT_TAG = "QTSniperAutoBot";
 function closeAllOpposite(oppositeDirection, callback) {
   var toClose = [];
   Framework.Orders.forEach(function (orderId, order) {
-    if (!order || order.instrumentId !== cfg.instrumentId || order.closeTime) return;
+    if (!order || !isBotInstrument(order.instrumentId) || order.closeTime) return;
     if (order.orderType !== FXB.OrderTypes.BUY && order.orderType !== FXB.OrderTypes.SELL) return;
     var dir = order.orderType === FXB.OrderTypes.BUY ? "buy" : "sell";
     if (dir === oppositeDirection) toClose.push(orderId);
@@ -854,42 +887,58 @@ function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride) {
   }, settings);
 }
 
-// Called whenever a new order/trade opens on the account. Claims the oldest queued
-// management entry for this instrument. NOTE: this intentionally does NOT require the
-// order's comment to match — not every broker feed reliably returns/persists custom
-// comments, and relying on that silently broke trailing/breakeven management entirely
-// (the trade itself still opened fine, since SL/TP don't depend on comments — only the
-// internal "is this ours to manage" check did). Matching on instrument + our own pending
-// queue is more robust. The trade-off: if you place a manual trade on the same instrument
-// while the bot is running, it could get claimed as "managed" too — avoid manual trades on
-// the bot's instrument while it's active.
+// Called whenever a new order/trade opens on the account, for this instrument. Two paths:
+// 1) The bot placed it itself (via placeOrder) — there's a queued pendingManagement entry
+//    waiting to be claimed, with the exact lots/direction/ATR the bot used.
+// 2) Nothing is queued — this is a manual trade placed while the bot is running. Rather than
+//    ignore it (which is what used to happen — a manual trade placed after Start was completely
+//    invisible to the bot, only trades placed BEFORE Start ever got picked up), adopt it the
+//    same way a trade re-adopted at Start would be: track it, and if it has no SL/TP, add one
+//    on the next bar close via applyMissingInitialRisk().
 Framework.OnOrderOpen = function (newOrder) {
-  if (!newOrder || newOrder.instrumentId !== (cfg && cfg.instrumentId)) return;
-  if (pendingManagement.length === 0) return;
-  var claim = pendingManagement.shift();
+  if (!newOrder || !isBotInstrument(newOrder.instrumentId)) return;
+  if (newOrder.orderType !== FXB.OrderTypes.BUY && newOrder.orderType !== FXB.OrderTypes.SELL) return; // ignore pending orders
+  if (managedOrders[newOrder.orderId]) return; // already tracked somehow — don't double-adopt
 
-  // Convert this specific trade's lot size into "$ per unit of price movement" — this is what
-  // lets Auto Trailing's dollar-denominated thresholds (Trail After Profit / Profit Lock
-  // Distance) translate into an actual price-based stop level, using the same tickSize/tickValue
-  // fields already relied on elsewhere for risk-based sizing. Stored lots too, so manageOpenTrades
-  // can retry this conversion later if instrument data wasn't ready at the exact moment of claim.
-  var instr = Framework.Instruments.get(cfg.instrumentId);
-  var dollarPerPriceUnit = (instr && instr.tickSize && instr.tickValue)
-    ? (claim.lots * instr.tickValue / instr.tickSize) : null;
+  if (pendingManagement.length > 0) {
+    var claim = pendingManagement.shift();
 
-  managedOrders[newOrder.orderId] = {
-    direction: claim.direction,
-    atrAtEntry: claim.atrAtEntry,
-    entryPrice: newOrder.openPrice,
-    breakevenApplied: false,
-    lots: claim.lots,
-    dollarPerPriceUnit: dollarPerPriceUnit
-  };
+    // Convert this specific trade's lot size into "$ per unit of price movement" — this is what
+    // lets Auto Trailing's dollar-denominated thresholds (Trail After Profit / Profit Lock
+    // Distance) translate into an actual price-based stop level, using the same tickSize/tickValue
+    // fields already relied on elsewhere for risk-based sizing. Stored lots too, so manageOpenTrades
+    // can retry this conversion later if instrument data wasn't ready at the exact moment of claim.
+    var instr = Framework.Instruments.get(cfg.instrumentId);
+    var dollarPerPriceUnit = (instr && instr.tickSize && instr.tickValue)
+      ? (claim.lots * instr.tickValue / instr.tickSize) : null;
 
-  if (cfg.autoTrailingOn && !dollarPerPriceUnit) {
-    log("Order " + newOrder.orderId + " — couldn't read instrument tick data yet, Auto Trailing will retry on the next bar close.", "log-warn");
+    managedOrders[newOrder.orderId] = {
+      direction: claim.direction,
+      atrAtEntry: claim.atrAtEntry,
+      entryPrice: newOrder.openPrice,
+      breakevenApplied: false,
+      lots: claim.lots,
+      dollarPerPriceUnit: dollarPerPriceUnit
+    };
+
+    if (cfg.autoTrailingOn && !dollarPerPriceUnit) {
+      log("Order " + newOrder.orderId + " — couldn't read instrument tick data yet, Auto Trailing will retry on the next bar close.", "log-warn");
+    }
+    log("Now managing order " + newOrder.orderId + " (Auto Trailing " + (cfg.autoTrailingOn ? "ON" : "OFF") + ")", "log-info");
+  } else if (isRunning) {
+    managedOrders[newOrder.orderId] = {
+      direction: newOrder.orderType === FXB.OrderTypes.BUY ? "buy" : "sell",
+      atrAtEntry: 0,
+      entryPrice: newOrder.openPrice,
+      breakevenApplied: false,
+      lots: null,
+      dollarPerPriceUnit: null,
+      needsInitialRisk: true // adds a missing SL/TP on the next bar close, same as a trade re-adopted at Start
+    };
+    log("Detected a manual trade on " + cfg.instrumentId + " (order " + newOrder.orderId +
+        ") — adopting it for management. Any missing SL/TP will be added on the next bar close, " +
+        "then breakeven/trailing begins.", "log-buy");
   }
-  log("Now managing order " + newOrder.orderId + " (Auto Trailing " + (cfg.autoTrailingOn ? "ON" : "OFF") + ")", "log-info");
 };
 
 // ---- Performance tracking — session-based (since last Start), not lifetime account history.
@@ -902,6 +951,7 @@ Framework.OnOrderClose = function (closedOrder) {
     var m = managedOrders[closedOrder.orderId];
     tradeLog.push({
       time: new Date().toLocaleString(),
+      dayKey: currentDayKey(),
       instrument: closedOrder.instrumentId || (cfg && cfg.instrumentId) || "",
       direction: m.direction,
       lots: (typeof closedOrder.volume === "number" && m.lots) ? m.lots : "",
@@ -959,13 +1009,17 @@ function exportTradeLogCsv() {
 }
 
 // Fires on every real-time balance/equity change — this is what lets the daily circuit
-// breaker AND Auto Trailing react immediately instead of waiting for the next bar close.
-// Trailing used to only run once per closed bar, which could mean many minutes between
-// checks — this is what makes it react the moment profit actually crosses your threshold.
+// breaker, missing SL/TP fill-in, AND Auto Trailing all react immediately instead of waiting
+// for the next bar close. Missing-SL/TP fill-in runs regardless of Auto Trailing's own on/off
+// state — an adopted trade with no protection needs a stop-loss immediately either way.
 Framework.OnAccountMetrics = function () {
   checkDailyCircuitBreaker();
   if (Object.keys(forceCloseQueue).length > 0) attemptForceCloses();
-  if (isRunning && cfg && cfg.autoTrailingOn) manageOpenTrades();
+  if (isRunning && cfg) {
+    var rtAtrV = getCurrentProtectionAtr();
+    if (rtAtrV) applyMissingInitialRisk(rtAtrV);
+    if (cfg.autoTrailingOn) manageOpenTrades();
+  }
 };
 
 // ---- Breakeven + ATR trailing on every managed open trade ------------
@@ -985,6 +1039,7 @@ function applyMissingInitialRisk(atrV) {
   Object.keys(managedOrders).forEach(function (orderId) {
     var m = managedOrders[orderId];
     if (!m.needsInitialRisk) return;
+    if (m.mgmtRetryAt && Date.now() < m.mgmtRetryAt) return; // cooling down from a recent failed attempt
     var order = Framework.Orders.get(orderId);
     if (!order || order.closeTime) { delete managedOrders[orderId]; return; }
 
@@ -1003,18 +1058,22 @@ function applyMissingInitialRisk(atrV) {
       actions.push("TP " + req.tp.toFixed(5));
     }
 
-    if (actions.length > 0) {
-      Framework.SendOrder(req, function (MsgResult) {
-        if (MsgResult && MsgResult.result && MsgResult.result.isOkay) {
-          log("Added missing " + actions.join(" / ") + " to order " + orderId + " (picked up with no protection)", "log-buy");
-        } else {
-          var errText = "unknown error";
-          try { errText = Framework.Translation.TranslateError(MsgResult.result); } catch (e) {}
-          log("Couldn't add SL/TP to order " + orderId + ": " + errText, "log-warn");
-        }
-      });
+    if (actions.length === 0) {
+      m.needsInitialRisk = false; // genuinely nothing to add — SL/TP already present, or both toggles are off
+      return;
     }
-    m.needsInitialRisk = false; // handled — either added what was needed, or nothing was needed/enabled
+
+    Framework.SendOrder(req, function (MsgResult) {
+      if (MsgResult && MsgResult.result && MsgResult.result.isOkay) {
+        log("Added missing " + actions.join(" / ") + " to order " + orderId + " (picked up with no protection)", "log-buy");
+        m.needsInitialRisk = false; // only clear on confirmed success — a failure below leaves it true so it retries
+      } else {
+        var errText = "unknown error";
+        try { errText = Framework.Translation.TranslateError(MsgResult.result); } catch (e) {}
+        log("⚠️ Couldn't add SL/TP to order " + orderId + ": " + errText + " — still unprotected, retrying.", "log-warn");
+        m.mgmtRetryAt = Date.now() + 4000; // cool down, then retry — do NOT give up
+      }
+    });
   });
 }
 
@@ -1041,6 +1100,13 @@ function manageOpenTrades(currentAtr) {
     var m = managedOrders[orderId];
     var order = Framework.Orders.get(orderId);
     if (!order || order.closeTime) { delete managedOrders[orderId]; return; }
+
+    // If a SL update for this specific order failed recently, don't retry it on every single
+    // real-time tick — cool down for a few seconds first. Without this, a persistently-rejected
+    // update (e.g. broker says "not enough working quantity") could fire dozens of times a
+    // second once trailing started reacting in real time, flooding SendOrder and, if "Confirm
+    // every order" is on, popping a confirmation dialog just as fast.
+    if (m.mgmtRetryAt && Date.now() < m.mgmtRetryAt) return;
 
     var isLong = m.direction === "buy";
     var price = order.closePrice; // current exit price for an open trade
@@ -1105,6 +1171,11 @@ function manageOpenTrades(currentAtr) {
           m.breakevenApplied = true;
           log("Order " + orderId + " moved to breakeven" + (bufferPrice > 0 ? " + $" + cfg.breakevenBufferDollars + " buffer" : "") +
               " (" + bePrice.toFixed(5) + ")", "log-info");
+        } else {
+          var beErrText = "unknown error";
+          try { beErrText = Framework.Translation.TranslateError(MsgResult.result); } catch (e) {}
+          log("Order " + orderId + " breakeven update failed: " + beErrText, "log-warn");
+          m.mgmtRetryAt = Date.now() + 4000; // cool down before retrying this order again
         }
       });
       return; // don't also trail on the same bar as the breakeven move
@@ -1144,6 +1215,7 @@ function manageOpenTrades(currentAtr) {
             var errText = "unknown error";
             try { errText = Framework.Translation.TranslateError(MsgResult.result); } catch (e) {}
             log("Order " + orderId + " trailing stop update FAILED: " + errText, "log-warn");
+            m.mgmtRetryAt = Date.now() + 4000; // cool down before retrying this order again
           }
         });
       }
@@ -1229,6 +1301,19 @@ function nearestStructuralTP(direction, closePrice, lv, maxDistance) {
 }
 
 // ---- Core signal + trading logic, called on each new closed bar -----
+// Reads a current ATR value directly from the live candle store — safe to call any time,
+// not just on a bar close, since tradingStore's calculations stay current between bar events.
+// This is what lets trade protection (missing SL/TP, breakeven, trailing) react instantly to a
+// real-time account update instead of waiting for the next candle to close.
+function getCurrentProtectionAtr() {
+  if (!tradingStore || tradingStore.length < 2) return null;
+  var protectAtr = tradingStore.ta[3]; // ATR(14)
+  var protectCandle = tradingStore.GetCandle(1);
+  if (!protectCandle) return null;
+  var protectRange = protectCandle.h - protectCandle.l;
+  return protectAtr.GetValue(1) || protectRange || null;
+}
+
 function onNewTradingBar() {
   // Retry any stuck force-closes even while stopped — this runs BEFORE the isRunning check on
   // purpose. A circuit-breaker trip sets isRunning=false, and if a close attempt failed, this is
@@ -1245,17 +1330,10 @@ function onNewTradingBar() {
   // history before the trend-signal logic further down can run. Gating protection behind that
   // requirement was a real bug: a freshly re-adopted manual trade could sit completely unprotected
   // for as long as this instrument/timeframe took to accumulate enough bars for the full strategy.
-  if (tradingStore.length >= 2) {
-    var protectAtr = tradingStore.ta[3]; // ATR(14)
-    var protectCandle = tradingStore.GetCandle(1);
-    if (protectCandle) {
-      var protectRange = protectCandle.h - protectCandle.l;
-      var earlyAtrV = (protectAtr.GetValue(1)) || protectRange || null;
-      if (earlyAtrV) {
-        applyMissingInitialRisk(earlyAtrV);
-        manageOpenTrades(earlyAtrV);
-      }
-    }
+  var earlyAtrV = getCurrentProtectionAtr();
+  if (earlyAtrV) {
+    applyMissingInitialRisk(earlyAtrV);
+    manageOpenTrades(earlyAtrV);
   }
 
   if (tradingStore.length < cfg.slowLen + 4) {
@@ -1530,6 +1608,15 @@ function startBot() {
   cfg.pipSize = (instr && instr.pipSize) ? instr.pipSize : 1;
   if (!instr) log("Instrument not yet loaded — using pipSize=1 for now; risk sizing will correct itself once it loads.", "log-warn");
 
+  // The platform normalizes instrument IDs internally (e.g. you might type "GBPJPY" to match
+  // your chart, but a real order object comes back with the canonical "GBP/JPY"). Comparing a
+  // real order's instrumentId against the raw text you typed can silently fail to match even
+  // though it's the same instrument — this is what actually gets compared against real orders.
+  cfg.canonicalInstrumentId = (instr && instr.instrumentId) ? instr.instrumentId : cfg.instrumentId;
+  if (cfg.canonicalInstrumentId !== cfg.instrumentId) {
+    log("Instrument \"" + cfg.instrumentId + "\" resolved to \"" + cfg.canonicalInstrumentId + "\" on this account.", "log-info");
+  }
+
   barsSinceLastEntry = { buy: 999, sell: 999, retestBuy: 999, retestSell: 999, levelRetestBuy: 999, levelRetestSell: 999 };
   addOnsUsed = { buy: 0, sell: 0 };
   pendingManagement = [];
@@ -1543,7 +1630,7 @@ function startBot() {
   // happened to the trade that ran to +$3,000 and gave most of it back.
   var reAdoptedCount = 0;
   Framework.Orders.forEach(function (orderId, order) {
-    if (!order || order.instrumentId !== cfg.instrumentId) return;
+    if (!order || !isBotInstrument(order.instrumentId)) return;
     if (order.closeTime) return; // historic/closed, not currently open
     if (order.orderType !== FXB.OrderTypes.BUY && order.orderType !== FXB.OrderTypes.SELL) return; // skip pending orders
     if (managedOrders[order.orderId]) return; // already tracked
@@ -1568,7 +1655,6 @@ function startBot() {
   entriesDayKey = currentDayKey();
   circuitBreakerTripped = false;
   dailyBreakerDayKey = currentDayKey();
-  dailyStartEquity = (Framework.Account && typeof Framework.Account.equity === "number") ? Framework.Account.equity : null;
   warnedZeroTrailAfter = false;
   warnedZeroLockDistance = false;
 
