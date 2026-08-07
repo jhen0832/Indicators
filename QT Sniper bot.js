@@ -162,12 +162,12 @@ button:active { transform: scale(0.98); }
 
   <fieldset>
     <legend>Mode</legend>
-    <small class="hint">Sets the timeframe and risk profile all at once. Scalper = fast, frequent, smaller moves. Swing = slower, fewer trades, bigger moves. Hybrid = balanced middle ground.</small>
+    <small class="hint">Sets the timeframe and risk profile all at once. Scalper = fast, frequent, smaller moves. Swing = slower, fewer trades, bigger moves.</small>
     <div class="row"><label>Mode</label>
       <select id="modeSelect">
+        <option value="" selected disabled>Select a mode...</option>
         <option value="scalper">Scalper</option>
         <option value="swing">Swing</option>
-        <option value="hybrid" selected>Hybrid</option>
       </select>
     </div>
   </fieldset>
@@ -736,14 +736,14 @@ function computeLotSize(fixedLots, riskPct, atrAtEntry) {
   return lots;
 }
 
-// ---- Mode presets — Scalper / Swing / Hybrid set the underlying advanced fields at once ----
+// ---- Mode presets — Scalper / Swing set the underlying advanced fields at once ----
 var MODE_PRESETS = {
   scalper: { timeframe: 300,  pivotTf: 86400,  slAtrMult: 1.5, tpAtrMult: 3, cooldownBars: 1, maxAddOns: 4, requirePivotSide: false, atrMult: 0.2 },
-  swing:   { timeframe: 3600, pivotTf: 604800, slAtrMult: 2.5, tpAtrMult: 6, cooldownBars: 1, maxAddOns: 3, requirePivotSide: false, atrMult: 0.2 },
-  hybrid:  { timeframe: 1800, pivotTf: 86400,  slAtrMult: 2.0, tpAtrMult: 4, cooldownBars: 1, maxAddOns: 4, requirePivotSide: false, atrMult: 0.2 }
+  swing:   { timeframe: 3600, pivotTf: 604800, slAtrMult: 2.5, tpAtrMult: 6, cooldownBars: 1, maxAddOns: 3, requirePivotSide: false, atrMult: 0.2 }
 };
 function applyModePreset(mode) {
-  var p = MODE_PRESETS[mode] || MODE_PRESETS.hybrid;
+  var p = MODE_PRESETS[mode];
+  if (!p) return; // no mode chosen yet — leave fields untouched rather than guess
   document.getElementById("timeframe").value = p.timeframe;
   document.getElementById("pivotTf").value = p.pivotTf;
   document.getElementById("slAtrMult").value = p.slAtrMult;
@@ -1592,6 +1592,7 @@ function startBot() {
   cfg = readConfig();
   if (!cfg.instrumentId) { log("Enter an instrument ID first (e.g. EUR/USD).", "log-warn"); return; }
   if (!document.getElementById("accountSizeSelect").value) { log("Select your Account Size first — this sets your position sizing and risk limits.", "log-warn"); return; }
+  if (!document.getElementById("modeSelect").value) { log("Select a Mode first (Scalper or Swing) — this sets your timeframe and risk profile.", "log-warn"); return; }
 
   // Catch a Mode/timeframe mismatch — e.g. Mode says "Swing" but the actual timeframe field
   // (in Advanced) got manually changed or drifted from a previously-saved setting and still
@@ -1608,14 +1609,14 @@ function startBot() {
   cfg.pipSize = (instr && instr.pipSize) ? instr.pipSize : 1;
   if (!instr) log("Instrument not yet loaded — using pipSize=1 for now; risk sizing will correct itself once it loads.", "log-warn");
 
-  // The platform normalizes instrument IDs internally (e.g. you might type "GBPJPY" to match
-  // your chart, but a real order object comes back with the canonical "GBP/JPY"). Comparing a
-  // real order's instrumentId against the raw text you typed can silently fail to match even
-  // though it's the same instrument — this is what actually gets compared against real orders.
+  // Everything visible — the Instrument field, the log, requests sent to the platform — always
+  // uses exactly what you typed (e.g. "US30", "EURUSD"), never a renamed/resolved version. This
+  // canonical value is computed silently, purely as an internal fallback for recognizing real
+  // order objects that come back using the platform's own naming — it's never shown or used
+  // anywhere else. Without it, a manual trade or an order on an instrument the platform names
+  // differently internally could go undetected for management purposes even though everything
+  // else (candles, pricing) already worked fine with what you typed.
   cfg.canonicalInstrumentId = (instr && instr.instrumentId) ? instr.instrumentId : cfg.instrumentId;
-  if (cfg.canonicalInstrumentId !== cfg.instrumentId) {
-    log("Instrument \"" + cfg.instrumentId + "\" resolved to \"" + cfg.canonicalInstrumentId + "\" on this account.", "log-info");
-  }
 
   barsSinceLastEntry = { buy: 999, sell: 999, retestBuy: 999, retestSell: 999, levelRetestBuy: 999, levelRetestSell: 999 };
   addOnsUsed = { buy: 0, sell: 0 };
@@ -1677,6 +1678,7 @@ function startBot() {
   setInputsDisabled(true);
   setStatus(true);
   log("Started on " + cfg.instrumentId + " — trading tf " + cfg.timeframe + "s, pivot tf " + cfg.pivotTf + "s", "log-info");
+  startHeartbeat();
 
   Framework.SaveCategorySettings(cfg);
 }
@@ -1685,7 +1687,58 @@ function stopBot() {
   isRunning = false;
   setInputsDisabled(false);
   setStatus(false);
+  stopHeartbeat();
   log("Stopped. Existing open trades/pending orders are NOT closed automatically.", "log-warn");
+}
+
+// ---- Heartbeat — a purely diagnostic feature, doesn't affect trading logic at all ----------
+// Browsers throttle or fully suspend JavaScript in background tabs, and laptops sleep — if that
+// happens, the bot doesn't crash or error, it just silently stops executing until the machine/tab
+// wakes back up, which can look exactly like "ran overnight, never traded" even during an active
+// session. This logs a heartbeat every 10 minutes and specifically detects if the gap since the
+// last one was much longer than expected — that's direct proof of exactly that happening, instead
+// of leaving it as a guess.
+var heartbeatInterval = null;
+var lastHeartbeatAt = null;
+var HEARTBEAT_INTERVAL_MS = 600000; // 10 minutes
+
+function startHeartbeat() {
+  lastHeartbeatAt = Date.now();
+  heartbeatInterval = setInterval(function () {
+    var now = Date.now();
+    var gapMin = (now - lastHeartbeatAt) / 60000;
+    if (gapMin > 15) {
+      log("⏰ Resumed after being inactive for ~" + gapMin.toFixed(0) + " minute(s) — the browser tab or computer was very likely asleep or backgrounded during that gap, not the bot failing to trade. Keep the tab active/foreground, or disable sleep mode, to run this reliably unattended.", "log-warn");
+    } else {
+      log("💓 Still running — watching " + (cfg ? cfg.instrumentId : "") + ". " + getCurrentTrendSummary(), "log-info");
+    }
+    lastHeartbeatAt = now;
+  }, HEARTBEAT_INTERVAL_MS);
+}
+function stopHeartbeat() {
+  if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+}
+
+// Reads the bot's own current EMA stack directly from the live candle store, independent of a
+// bar close, and describes it in plain language. This is grounded in the exact same trend logic
+// the real signal uses — not a separate invented "choppiness score" — so what it says is always
+// consistent with what the bot is actually seeing, not a guess dressed up as one.
+function getCurrentTrendSummary() {
+  if (!cfg || !tradingStore || tradingStore.length < cfg.slowLen + 4) return "Still loading price history.";
+  var emaFast = tradingStore.ta[0], emaMid = tradingStore.ta[1], emaSlow = tradingStore.ta[2];
+  var fast = emaFast.GetValue(1), mid = emaMid.GetValue(1), slow = emaSlow.GetValue(1);
+  var fast2 = emaFast.GetValue(3), mid2 = emaMid.GetValue(3), slow2 = emaSlow.GetValue(3);
+  if (!fast || !mid || !slow || !fast2 || !mid2 || !slow2) return "Still loading price history.";
+
+  var bullStack = fast > mid && mid > slow;
+  var bearStack = fast < mid && mid < slow;
+  var bullTrend = bullStack && fast > fast2 && mid > mid2;
+  var bearTrend = bearStack && fast < fast2 && mid < mid2;
+
+  if (bullTrend) return "Uptrend confirmed — waiting for a momentum candle + retest.";
+  if (bearTrend) return "Downtrend confirmed — waiting for a momentum candle + retest.";
+  if (bullStack || bearStack) return "Trend forming but not confirmed yet.";
+  return "No clear trend right now — market looks choppy/ranging.";
 }
 
 // ---- Wire-up ---------------------------------------------------------
