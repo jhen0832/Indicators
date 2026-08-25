@@ -291,14 +291,21 @@ button:active { transform: scale(0.98); }
   </fieldset>
 
   <fieldset>
-    <legend>Position sizing (fixed-lots mode only)</legend>
-    <div class="row"><label>Base size (lots)</label><input type="number" id="baseLots" value="0.10" min="0.01" step="0.01"></div>
+    <legend>Add-on & retest behavior (applies in both sizing modes)</legend>
+    <small class="hint">These control whether the bot adds to a winning position or takes a lighter retest entry, and how many bars it waits between entries — none of this depends on whether you're using Fixed lots or Risk % sizing below.</small>
     <div class="row"><label>Enable add-ons</label><input type="checkbox" id="enableAddOns" checked></div>
-    <div class="row"><label>Add-on size (lots)</label><input type="number" id="addOnLots" value="0.05" min="0.01" step="0.01"></div>
     <div class="row"><label>Max add-ons/direction</label><input type="number" id="maxAddOns" value="4" min="0" max="10"></div>
+    <small class="hint">Untick "Enable add-ons" to stop the bot from adding to a position entirely — setting Max add-ons to 0 does the same thing, either works.</small>
     <div class="row"><label>Enable retest entries</label><input type="checkbox" id="enableRetest" checked></div>
-    <div class="row"><label>Retest size (lots)</label><input type="number" id="retestLots" value="0.05" min="0.01" step="0.01"></div>
     <div class="row"><label>Cooldown (bars)</label><input type="number" id="cooldownBars" value="1" min="0" max="50"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Position sizing (Fixed lots mode only)</legend>
+    <small class="hint">These lot-size numbers are only used when Sizing mode above is set to "Fixed lots" — they're ignored entirely in Risk % mode.</small>
+    <div class="row"><label>Base size (lots)</label><input type="number" id="baseLots" value="0.10" min="0.01" step="0.01"></div>
+    <div class="row"><label>Add-on size (lots)</label><input type="number" id="addOnLots" value="0.05" min="0.01" step="0.01"></div>
+    <div class="row"><label>Retest size (lots)</label><input type="number" id="retestLots" value="0.05" min="0.01" step="0.01"></div>
   </fieldset>
 
   <fieldset>
@@ -564,6 +571,12 @@ function beep(direction) {
 }
 
 // ---- Logging ---------------------------------------------------------
+// Keeps the last 60 log lines so they can be persisted alongside your settings (see
+// persistLogHistory below) and survive a page reload — deliberately capped small so this can
+// never grow large enough to risk the settings save itself failing.
+var logHistoryBuffer = [];
+var LOG_HISTORY_MAX = 60;
+
 function log(msg, cls) {
   var el = document.getElementById("log");
   var line = document.createElement("div");
@@ -573,6 +586,9 @@ function log(msg, cls) {
   line.textContent = "[" + ts + "] " + msg;
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
+
+  logHistoryBuffer.push({ ts: ts, msg: msg, cls: cls || "" });
+  if (logHistoryBuffer.length > LOG_HISTORY_MAX) logHistoryBuffer.shift();
 }
 
 // ---- UI helpers --------------------------------------------------
@@ -820,7 +836,7 @@ function closeAllOpposite(oppositeDirection, callback) {
   });
 }
 
-function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride) {
+function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride, currentPrice) {
   if (!lots || lots <= 0) return; // computeLotSize already logged why, if this was a risk-sizing refusal
   if (pendingOrder) { log("Skipped " + direction + " (" + reason + ") — previous order still in flight", "log-warn"); return; }
   if (!dailyCapOk()) { log("Skipped " + direction + " (" + reason + ") — daily entry cap (" + cfg.maxEntriesPerDay + ") reached", "log-warn"); return; }
@@ -835,35 +851,35 @@ function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride) {
     comment: BOT_TAG
   };
 
-  // Stop-loss: only set when "Add Stop-Loss" is ON. This used to be unconditional/mandatory —
-  // now it's an explicit, deliberate choice, with a clear warning in the UI about what OFF means.
-  if (cfg.addStopLoss && atrAtEntry && cfg.pipSize) {
-    if (cfg.slAtrMult > 0) {
-      var slPips = Math.max(1, Math.round((atrAtEntry * cfg.slAtrMult) / cfg.pipSize));
-      req.sl = { pips: slPips };
-    }
+  var isLong = direction === "buy";
+
+  // Stop-loss: only set when "Add Stop-Loss" is ON. Computed as a direct absolute price from the
+  // current close, not a pip count — this removes the instrument pipSize entirely from this
+  // calculation, which is what previously let a broker-data delay at the exact moment of entry
+  // distort the stop distance into something invalid. A price is a price; there's no unit
+  // conversion left to get wrong.
+  if (cfg.addStopLoss && atrAtEntry && currentPrice && cfg.slAtrMult > 0) {
+    var slDist = atrAtEntry * cfg.slAtrMult;
+    req.sl = isLong ? (currentPrice - slDist) : (currentPrice + slDist);
   }
 
-  // Take-profit: only set when "Add Take-Profit" is ON. When ON, prefer a real structural level
-  // (R1/S1/Fib) when available, since that targets an actual place price has reason to react —
-  // falls back to the ATR cap otherwise. When OFF, no fixed target is set — the trade exits only
-  // via Auto Trailing (if on) or the stop-loss (if on).
+  // Take-profit: only set when "Add Take-Profit" is ON. Prefers a real structural level (R1/S1/
+  // Fib) when available — falls back to the ATR cap otherwise, also computed as a direct price now.
   if (cfg.addTakeProfit) {
     if (tpPriceOverride) {
       req.tp = tpPriceOverride; // absolute price
-    } else if (atrAtEntry && cfg.pipSize && cfg.tpAtrMult > 0) {
-      var tpPips = Math.round((atrAtEntry * cfg.tpAtrMult) / cfg.pipSize);
-      req.tp = { pips: tpPips };
+    } else if (atrAtEntry && currentPrice && cfg.tpAtrMult > 0) {
+      var tpDist = atrAtEntry * cfg.tpAtrMult;
+      req.tp = isLong ? (currentPrice + tpDist) : (currentPrice - tpDist);
     }
   }
 
   pendingOrder = true;
   var settings = cfg.confirmOrders ? { confirm: true } : {};
 
-  var slTxt = req.sl ? " | SL " + req.sl.pips + "p" : (!cfg.addStopLoss ? " | NO STOP-LOSS" : "");
+  var slTxt = typeof req.sl === "number" ? " | SL " + req.sl.toFixed(5) : (!cfg.addStopLoss ? " | NO STOP-LOSS" : "");
   var tpTxt = "";
-  if (typeof req.tp === "number") tpTxt = " | TP " + req.tp.toFixed(5) + " (structural level)";
-  else if (req.tp && req.tp.pips) tpTxt = " | TP " + req.tp.pips + "p";
+  if (typeof req.tp === "number") tpTxt = " | TP " + req.tp.toFixed(5) + (tpPriceOverride ? " (structural level)" : "");
   else if (!cfg.addTakeProfit) tpTxt = " | no fixed TP";
 
   log((direction === "buy" ? "BUY " : "SELL ") + lots + " lots " + cfg.instrumentId + " — " + reason + slTxt + tpTxt,
@@ -1141,10 +1157,16 @@ function manageOpenTrades(currentAtr) {
           (m.breakevenApplied ? " | breakeven done" : ""), "log-info");
     }
 
-    // Step 1: move to breakeven once profit reaches half of "Trail After Profit" — but only if
-    // that's actually an improvement on the current stop. If you've manually tightened the stop
-    // closer than breakeven already, this leaves it alone instead of loosening it back out.
-    var breakevenTriggerDollars = (cfg.trailAfterProfitDollars || 0) * 0.5;
+    // Step 1: move to breakeven once profit has genuinely cleared the buffer amount (with a
+    // safety margin), not just a fixed half of "Trail After Profit" — that fixed-half approach
+    // could ask for more profit than the trade had actually earned whenever the buffer was set
+    // close to (or larger than) half the trigger, which is exactly what produced "SL cannot be
+    // lower than the ask price": the bot was asking the broker for a stop beyond current price.
+    // Taking whichever of these is LARGER makes that mismatch structurally impossible.
+    var breakevenTriggerDollars = Math.max(
+      (cfg.trailAfterProfitDollars || 0) * 0.5,
+      (cfg.breakevenBufferDollars || 0) * 1.1
+    );
     if (!m.breakevenApplied && breakevenTriggerDollars > 0 && profitDollars >= breakevenTriggerDollars) {
       // Entry price alone still loses the spread (and any commission) if the stop actually gets
       // hit there — that's a guaranteed small loss, not a true breakeven. This buffer pushes the
@@ -1441,10 +1463,10 @@ function onNewTradingBar() {
       var tpBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
       var pivotTxt = pivotP !== null ? pivotP.toFixed(5) : "n/a";
       if (!isAdd) {
-        placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal above pivot P (" + pivotTxt + ")", atrV, tpBuy);
+        placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal above pivot P (" + pivotTxt + ")", atrV, tpBuy, c);
         barsSinceLastEntry.buy = 0;
       } else if (cfg.enableAddOns && addOnsUsed.buy < cfg.maxAddOns) {
-        placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, uptrend signal above pivot P", atrV, tpBuy);
+        placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, uptrend signal above pivot P", atrV, tpBuy, c);
         addOnsUsed.buy++; barsSinceLastEntry.buy = 0;
       } else {
         log("Buy signal fired but ignored — already long and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
@@ -1457,7 +1479,7 @@ function onNewTradingBar() {
         closeAllOpposite("sell", function () {
           addOnsUsed.buy = 0; addOnsUsed.sell = 0;
           var tpBuyRev = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal (reversal)", atrV, tpBuyRev);
+          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal (reversal)", atrV, tpBuyRev, c);
           barsSinceLastEntry.buy = 0;
         });
       } else {
@@ -1479,10 +1501,10 @@ function onNewTradingBar() {
       var tpSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
       var pivotTxtS = pivotP !== null ? pivotP.toFixed(5) : "n/a";
       if (!isAddS) {
-        placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal below pivot P (" + pivotTxtS + ")", atrV, tpSell);
+        placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal below pivot P (" + pivotTxtS + ")", atrV, tpSell, c);
         barsSinceLastEntry.sell = 0;
       } else if (cfg.enableAddOns && addOnsUsed.sell < cfg.maxAddOns) {
-        placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, downtrend signal below pivot P", atrV, tpSell);
+        placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, downtrend signal below pivot P", atrV, tpSell, c);
         addOnsUsed.sell++; barsSinceLastEntry.sell = 0;
       } else {
         log("Sell signal fired but ignored — already short and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
@@ -1495,7 +1517,7 @@ function onNewTradingBar() {
         closeAllOpposite("buy", function () {
           addOnsUsed.buy = 0; addOnsUsed.sell = 0;
           var tpSellRev = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal (reversal)", atrV, tpSellRev);
+          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal (reversal)", atrV, tpSellRev, c);
           barsSinceLastEntry.sell = 0;
         });
       } else {
@@ -1514,12 +1536,12 @@ function onNewTradingBar() {
   if (cfg.enableRetest) {
     if (retestBuy && aboveP && barsSinceLastEntry.retestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
       var tpRetestBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("buy", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, uptrend above pivot P", atrV, tpRetestBuy);
+      placeOrder("buy", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, uptrend above pivot P", atrV, tpRetestBuy, c);
       barsSinceLastEntry.retestBuy = 0;
     }
     if (retestSell && belowP && barsSinceLastEntry.retestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
       var tpRetestSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("sell", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, downtrend below pivot P", atrV, tpRetestSell);
+      placeOrder("sell", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, downtrend below pivot P", atrV, tpRetestSell, c);
       barsSinceLastEntry.retestSell = 0;
     }
   }
@@ -1528,12 +1550,12 @@ function onNewTradingBar() {
   if (cfg.enableLevelRetest && pivotLevels) {
     if (levelRetestBuy !== null && aboveP && barsSinceLastEntry.levelRetestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
       var tpLevelBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("buy", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestBuy.toFixed(5) + " as support", atrV, tpLevelBuy);
+      placeOrder("buy", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestBuy.toFixed(5) + " as support", atrV, tpLevelBuy, c);
       barsSinceLastEntry.levelRetestBuy = 0;
     }
     if (levelRetestSell !== null && belowP && barsSinceLastEntry.levelRetestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
       var tpLevelSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("sell", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestSell.toFixed(5) + " as resistance", atrV, tpLevelSell);
+      placeOrder("sell", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestSell.toFixed(5) + " as resistance", atrV, tpLevelSell, c);
       barsSinceLastEntry.levelRetestSell = 0;
     }
   }
@@ -1606,8 +1628,7 @@ function startBot() {
   }
 
   var instr = Framework.Instruments.get(cfg.instrumentId);
-  cfg.pipSize = (instr && instr.pipSize) ? instr.pipSize : 1;
-  if (!instr) log("Instrument not yet loaded — using pipSize=1 for now; risk sizing will correct itself once it loads.", "log-warn");
+  if (!instr) log("Instrument not yet loaded yet — this will resolve itself once the platform loads it.", "log-warn");
 
   // Everything visible — the Instrument field, the log, requests sent to the platform — always
   // uses exactly what you typed (e.g. "US30", "EURUSD"), never a renamed/resolved version. This
@@ -1679,6 +1700,7 @@ function startBot() {
   setStatus(true);
   log("Started on " + cfg.instrumentId + " — trading tf " + cfg.timeframe + "s, pivot tf " + cfg.pivotTf + "s", "log-info");
   startHeartbeat();
+  startLogPersistence();
 
   Framework.SaveCategorySettings(cfg);
 }
@@ -1688,7 +1710,26 @@ function stopBot() {
   setInputsDisabled(false);
   setStatus(false);
   stopHeartbeat();
+  stopLogPersistence();
   log("Stopped. Existing open trades/pending orders are NOT closed automatically.", "log-warn");
+}
+
+// ---- Log persistence — rides on the same settings save already proven to work, rather than a
+// new/separate mechanism. Every 60 seconds while running, the last 60 log lines get saved
+// alongside your settings, so a frozen chart, a crash, or a reload doesn't erase the evidence
+// of what was actually happening right before it — exactly the gap that lost the heartbeat
+// history overnight. Restored automatically on the next load, clearly marked as from before
+// the reload so it's never confused with the current session's own lines.
+var logPersistInterval = null;
+function startLogPersistence() {
+  logPersistInterval = setInterval(function () {
+    if (!cfg) return;
+    cfg.logHistory = logHistoryBuffer;
+    Framework.SaveCategorySettings(cfg);
+  }, 60000);
+}
+function stopLogPersistence() {
+  if (logPersistInterval) { clearInterval(logPersistInterval); logPersistInterval = null; }
 }
 
 // ---- Heartbeat — a purely diagnostic feature, doesn't affect trading logic at all ----------
@@ -1774,6 +1815,20 @@ Framework.OnLoad = function () {
     // applyConfigToUI, and re-applying the preset here would silently overwrite them.
     if (isFreshInstall) applyModePreset(document.getElementById("modeSelect").value);
     setStatus(false);
+
+    if (settings.logHistory && settings.logHistory.length > 0) {
+      log("───── Restored log from before last reload (may be up to 60s stale) ─────", "log-warn");
+      settings.logHistory.forEach(function (entry) {
+        var el = document.getElementById("log");
+        var line = document.createElement("div");
+        if (entry.cls) line.className = entry.cls;
+        line.textContent = "[" + entry.ts + "] " + entry.msg;
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      });
+      log("───── New session begins below ─────", "log-warn");
+    }
+
     log("Ready. Review settings, then press Start Bot.", "log-info");
   });
 
