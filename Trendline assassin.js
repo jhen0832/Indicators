@@ -36,12 +36,13 @@
 class MyIndicator extends UserDefinedIndicator {
 
     onInit(data) {
-        this.$signalCache  = {};
-        this.$openSignal   = null;
-        this.$alertedDate  = 0;
-        this.$alertedClose = 0;
-        this.$atr          = null;
-        this.$touchedTLs   = {};
+        this.$signalCache   = {};
+        this.$openSignal    = null;
+        this.$alertedDate   = 0;
+        this.$alertedClose  = 0;
+        this.$atr           = null;
+        this.$touchedTLs    = {};
+        this.$lastFilterKey = null; // tracks setting changes so toggles apply instantly
 
         return {
             caption:   "Trendline Assassin",
@@ -116,12 +117,12 @@ class MyIndicator extends UserDefinedIndicator {
                 {
                     id: "showBuys",
                     caption: "Show BUY signals",
-                    type: "bool", defaultValue: true
+                    type: "bool", defaultValue: false
                 },
                 {
                     id: "showSells",
                     caption: "Show SELL signals",
-                    type: "bool", defaultValue: true
+                    type: "bool", defaultValue: false
                 },
                 // ── Colors ────────────────────────────────────
                 {
@@ -174,12 +175,13 @@ class MyIndicator extends UserDefinedIndicator {
     onParameterChange(data) { this._reset(); }
 
     _reset() {
-        this.$signalCache  = {};
-        this.$openSignal   = null;
-        this.$alertedDate  = 0;
-        this.$alertedClose = 0;
-        this.$atr          = null;
-        this.$touchedTLs   = {};
+        this.$signalCache   = {};
+        this.$openSignal    = null;
+        this.$alertedDate   = 0;
+        this.$alertedClose  = 0;
+        this.$atr           = null;
+        this.$touchedTLs    = {};
+        this.$lastFilterKey = null;
         this.removeAllDrawings();
     }
 
@@ -197,6 +199,20 @@ class MyIndicator extends UserDefinedIndicator {
 
     onCalculate(data, output) {
         var p             = data.parameters;
+
+        // ── Settings-change guard ───────────────────────────────
+        // Some platform saves only fire a "current bar" update (not a
+        // full recalc) right after the user changes a setting. That
+        // used to leave old BUY/SELL arrows on the chart until the
+        // next new bar arrived. We fingerprint the full settings
+        // object every call; if anything changed since last time, we
+        // force a full recalc this call instead of taking the
+        // live-bar shortcut, so toggles (and any other setting) take
+        // effect immediately.
+        var filterKey        = JSON.stringify(p);
+        var forceFullRecalc  = (this.$lastFilterKey !== null && this.$lastFilterKey !== filterKey);
+        this.$lastFilterKey  = filterKey;
+
         var trendlineLB   = parseInt(p.trendlineLookback) || 100;
         var swingStr      = parseInt(p.swingStrength)     || 5;
         var touchPts      = parseInt(p.touchZonePts)      || 25;
@@ -209,8 +225,8 @@ class MyIndicator extends UserDefinedIndicator {
         var colorSup      = p.colorSupport || "#00dc78";
         var colorRes      = p.colorResist  || "#ff4040";
         var lw            = parseInt(p.lineWidth) || 2;
-        var showBuys      = this._bool(p.showBuys);
-        var showSells     = this._bool(p.showSells);
+        var showBuys      = this._bool(p.showBuys !== undefined ? p.showBuys : false);
+        var showSells     = this._bool(p.showSells !== undefined ? p.showSells : false);
         var colorBuy      = p.colorBuy  || "#00e5ff";
         var colorSell     = p.colorSell || "#ff4081";
         var lblBuy        = (p.labelBuy  || "BUY").trim();
@@ -236,8 +252,10 @@ class MyIndicator extends UserDefinedIndicator {
         }
         var atrArr = this.$atr.GetValueArray();
 
-        // Live bar — milestones only
-        if (data.currentBarUpdateOnly) {
+        // Live bar — milestones only (unless a setting just changed,
+        // in which case we fall through to a full recalc below so
+        // the chart reflects the new settings immediately).
+        if (data.currentBarUpdateOnly && !forceFullRecalc) {
             if (this.$openSignal) {
                 this._milestones(bd.close[0], bd.date[0], pipSize,
                     alertsOn, telegramOn, tgToken, tgChatId, instrument, timeframe);
@@ -369,7 +387,10 @@ class MyIndicator extends UserDefinedIndicator {
             var signalType = null;
 
             // ── BUY: touch support trendline + bullish close ───
-            if (showBuys && bullTL) {
+            // NOTE: evaluated regardless of the showBuys display toggle,
+            // so history is always fully detected/cached. showBuys only
+            // controls whether it's drawn (see replay loop + push below).
+            if (bullTL) {
                 var bSupport = bullTL.baseIdx - i;
                 var tlSup    = bullTL.basePrice + (bullTL.slope * bSupport);
 
@@ -390,7 +411,7 @@ class MyIndicator extends UserDefinedIndicator {
             }
 
             // ── SELL: touch resistance trendline + bearish close
-            if (!signalType && showSells && bearTL) {
+            if (!signalType && bearTL) {
                 var bResist = bearTL.baseIdx - i;
                 var tlRes   = bearTL.basePrice + (bearTL.slope * bResist);
 
@@ -436,9 +457,12 @@ class MyIndicator extends UserDefinedIndicator {
             };
             lastSigBar = i;
 
-            var lbl = isBuy ? "▲ " + lblBuy : "▼ " + lblSell;
-            drawings.push(this._arrow(barDate, isBuy ? low : high, isBuy, lbl,
-                isBuy ? colorBuy : colorSell));
+            // Only draw it now if its direction is currently toggled on.
+            if ((isBuy && showBuys) || (!isBuy && showSells)) {
+                var lbl = isBuy ? "▲ " + lblBuy : "▼ " + lblSell;
+                drawings.push(this._arrow(barDate, isBuy ? low : high, isBuy, lbl,
+                    isBuy ? colorBuy : colorSell));
+            }
 
             // Alert on bar[1]
             if (i === 1 && barDate !== this.$alertedDate) {
