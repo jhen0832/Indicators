@@ -122,7 +122,7 @@ button:active { transform: scale(0.98); }
 </div>
 <div id="content">
 
-  <span id="versionBadge">⚡ QT Sniper v2.0</span>
+  <span id="versionBadge">⚡ QT Sniper v2.2 — Strategies</span>
 
   <div class="warning-box">
     ⚠️ This places <b>real orders</b> the moment conditions are met (unless "Confirm every order" in Advanced is
@@ -133,10 +133,10 @@ button:active { transform: scale(0.98); }
 
   <div class="intro-box">
     <b>New to this? Here's all you need:</b><br>
-    Type your instrument, pick a Mode, leave everything else as shown, and press Start Bot.
-    It watches for a real trend with strong momentum and trades it automatically — stop-loss,
-    take-profit, and a trailing stop all handled for you. Use <b>Test Trade</b> and "Confirm
-    every order" (in Advanced) while you're still learning how it behaves.
+    Type your instrument, pick a Strategy, pick a Mode, leave everything else as shown, and press
+    Start Bot. Stop-loss, take-profit, and a trailing stop are all handled for you regardless of
+    which strategy you pick. Use <b>Test Trade</b> and "Confirm every order" (in Advanced) while
+    you're still learning how it behaves.
   </div>
 
   <fieldset>
@@ -158,6 +158,19 @@ button:active { transform: scale(0.98); }
     <legend>Market</legend>
     <small class="hint">Type it exactly as shown on your own chart (e.g. EURUSD, XAUUSD, NAS100) — not a nickname like "Gold."</small>
     <div class="row"><label>Instrument</label><input type="text" id="instrumentId" placeholder="e.g. EURUSD"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Strategy</legend>
+    <small class="hint">Picks which signal engine the bot trades with. Every safety system below — sizing, stop-loss/take-profit, Auto Trailing, the Daily circuit breaker, the hard lot cap — works identically no matter which one you pick, since they all operate on the trade after it opens, not on how the signal was generated. Switching strategies never touches the other strategy's own settings — they just sit unused until you switch back.</small>
+    <div class="row"><label>Strategy</label>
+      <select id="strategySelect">
+        <option value="" selected disabled>Select a strategy...</option>
+        <option value="original">Original (Trend + Momentum)</option>
+        <option value="fvg">Fair Value Gap (FVG)</option>
+        <option value="sd">Supply &amp; Demand Zones</option>
+      </select>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -227,6 +240,17 @@ button:active { transform: scale(0.98); }
     <div class="row"><label>Close open trades when hit</label><input type="checkbox" id="closeOnCircuitBreak" checked></div>
   </fieldset>
 
+  <fieldset>
+    <legend>Auto Trading</legend>
+    <small class="hint">ON (default): the bot opens new trades itself, exactly as normal. OFF: the bot opens NO new trades of its own, but keeps running — meaning it still adds a missing stop-loss/take-profit to any trade you place manually, still moves it to breakeven and trails it, and the Daily circuit breaker still protects you. Use this if you want to trade by hand while the bot handles managing the trade for you.</small>
+    <div class="row"><label>Auto Trading</label>
+      <select id="autoTradingOn">
+        <option value="on" selected>ON — bot trades automatically</option>
+        <option value="off">OFF — manage my manual trades only</option>
+      </select>
+    </div>
+  </fieldset>
+
   <button type="button" id="advancedToggle">▸ Show advanced settings</button>
   <div id="advancedSection">
 
@@ -275,11 +299,43 @@ button:active { transform: scale(0.98); }
 
   <fieldset>
     <legend>Trend / signal (Overkill Scalper logic)</legend>
-    <small class="hint">These are the same numbers the Overkill Scalper indicator uses. The defaults ARE the strategy — only change these if you understand what you're adjusting.</small>
+    <small class="hint">These are the same numbers the Overkill Scalper indicator uses. The defaults ARE the strategy — only change these if you understand what you're adjusting. Only used when Strategy above is set to "Original (Trend + Momentum)".</small>
     <div class="row"><label>Fast EMA</label><input type="number" id="fastLen" value="5" min="2" max="50"></div>
     <div class="row"><label>Mid EMA (trend line)</label><input type="number" id="midLen" value="13" min="5" max="100"></div>
     <div class="row"><label>Slow EMA</label><input type="number" id="slowLen" value="34" min="10" max="300"></div>
     <div class="row"><label>Min candle / ATR</label><input type="number" id="atrMult" value="0.2" min="0.05" max="3" step="0.05"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Fair Value Gap (FVG) settings</legend>
+    <small class="hint">Only used when Strategy above is set to "Fair Value Gap (FVG)". A Fair Value Gap is a 3-candle imbalance — candle 1 and candle 3 don't overlap, leaving an untouched price zone in between. Rather than entering the instant a gap forms (a noisier, lower-quality version of this), the bot waits for price to pull back INTO the gap and show a reaction there before entering — the same "retest, don't chase" philosophy used everywhere else in this bot.</small>
+    <div class="row"><label>Min gap size (× ATR)</label><input type="number" id="fvgMinGapAtrMult" value="0.3" min="0.05" step="0.05"></div>
+    <small class="hint">Filters out tiny, insignificant gaps — only gaps at least this many ATRs wide count as a real Fair Value Gap.</small>
+    <div class="row"><label>Require reaction candle</label><input type="checkbox" id="fvgRequireReaction" checked></div>
+    <small class="hint">ON (recommended): only enters if the retest candle actually closes back out of the gap in the gap's favor — a real reaction, not just a touch. OFF: enters on the first touch of the gap, no confirmation required — faster but noisier.</small>
+    <div class="row"><label>Max bars gap stays active</label><input type="number" id="fvgMaxBarsActive" value="50" min="5" max="500"></div>
+    <small class="hint">A gap that's never been retested after this many bars is considered stale and gets dropped — old gaps lose relevance the longer price ignores them.</small>
+    <div class="row"><label>Stop buffer beyond gap (× ATR)</label><input type="number" id="fvgStopBufferAtrMult" value="0.2" min="0" step="0.05"></div>
+    <small class="hint">The stop-loss sits just beyond the far edge of the gap, plus this small buffer — not a generic ATR multiple from entry, since the gap's own boundary is the actual level that invalidates the setup.</small>
+  </fieldset>
+
+  <fieldset>
+    <legend>Supply &amp; Demand Zone settings</legend>
+    <small class="hint">Only used when Strategy above is set to "Supply &amp; Demand Zones". Looks for a tight consolidation ("base") immediately followed by a strong breakout candle away from it — the classic Rally-Base-Drop / Drop-Base-Rally pattern. The base area itself becomes the zone: a demand zone if price broke up from it, a supply zone if price broke down. Same "wait for a real reaction on retest, don't chase" philosophy as everywhere else — plus one thing FVG doesn't track: each zone weakens with every retest, since a level that's already been tested once is statistically less reliable the next time.</small>
+    <div class="row"><label>Max base candles</label><input type="number" id="sdMaxBaseCandles" value="3" min="1" max="8"></div>
+    <small class="hint">How many consecutive tight-range candles can make up the consolidation base before the breakout candle.</small>
+    <div class="row"><label>Base candle max range (× ATR)</label><input type="number" id="sdBaseMaxRangeAtrMult" value="0.5" min="0.1" step="0.05"></div>
+    <small class="hint">How tight the base candles must be — a candle wider than this doesn't count as part of the consolidation.</small>
+    <div class="row"><label>Breakout candle min size (× ATR)</label><input type="number" id="sdBreakoutMinAtrMult" value="0.8" min="0.1" step="0.05"></div>
+    <small class="hint">How strong the move away from the base must be to count as a genuine breakout, not just noise — deliberately stricter than a normal entry candle, since this is what defines the whole zone.</small>
+    <div class="row"><label>Require reaction candle</label><input type="checkbox" id="sdRequireReaction" checked></div>
+    <small class="hint">ON (recommended): only enters if the retest candle actually closes back out of the zone in its favor. OFF: enters on the first touch, no confirmation required.</small>
+    <div class="row"><label>Max retests before zone expires</label><input type="number" id="sdMaxRetests" value="2" min="1" max="10"></div>
+    <small class="hint">A zone gets weaker each time price returns to it. After this many retests, the zone is considered exhausted and stops being tracked — even if this specific retest still counts as a valid entry.</small>
+    <div class="row"><label>Max bars zone stays active</label><input type="number" id="sdMaxBarsActive" value="80" min="5" max="500"></div>
+    <small class="hint">A zone that's never been retested after this many bars is considered stale and dropped. Given longer than an FVG's default, since a real supply/demand imbalance tends to stay relevant longer than a simple price gap.</small>
+    <div class="row"><label>Stop buffer beyond zone (× ATR)</label><input type="number" id="sdStopBufferAtrMult" value="0.2" min="0" step="0.05"></div>
+    <small class="hint">The stop-loss sits just beyond the far edge of the zone, plus this small buffer — the zone's own boundary is what actually invalidates the setup.</small>
   </fieldset>
 
   <fieldset>
@@ -331,7 +387,7 @@ button:active { transform: scale(0.98); }
 
   <fieldset>
     <legend>Reversal Mode (instead of hedging)</legend>
-    <small class="hint">We don't offer true hedging (holding opposing trades on the same instrument at once) — it doesn't actually reduce risk the way it feels like it should, costs extra spread/swap, and doesn't even work on many broker accounts. This is the better fix: when ON, an opposite-direction signal closes your current position and flips straight into the new direction, instead of just being ignored until the old position closes on its own.</small>
+    <small class="hint">We don't offer true hedging (holding opposing trades on the same instrument at once) — it doesn't actually reduce risk the way it feels like it should, costs extra spread/swap, and doesn't even work on many broker accounts. This is the better fix: when ON, an opposite-direction signal closes your current position and flips straight into the new direction, instead of just being ignored until the old position closes on its own. Only applies to the Original strategy's primary signal.</small>
     <div class="row"><label>Reversal Mode</label>
       <select id="reversalModeOn">
         <option value="off" selected>OFF (ignore opposite signals)</option>
@@ -349,18 +405,46 @@ button:active { transform: scale(0.98); }
 
   <fieldset>
     <legend>Structural levels (Smart Pivot Points logic)</legend>
-    <small class="hint">Instead of a random target price, this aims each trade at a real support/resistance level (R1, S1, Fib lines) — price has an actual reason to react there.</small>
+    <small class="hint">Instead of a random target price, this aims each trade at a real support/resistance level (R1, S1, Fib lines) — price has an actual reason to react there. Used for BOTH strategies' take-profit targets when "Use levels for TP" is on.</small>
     <div class="row"><label>Use levels for TP</label><input type="checkbox" id="useLevelTP" checked></div>
     <div class="row"><label>Enable level-retest entries</label><input type="checkbox" id="enableLevelRetest" checked></div>
     <div class="row"><label>Level-retest size (lots)</label><input type="number" id="levelRetestLots" value="0.05" min="0.01" step="0.01"></div>
+    <div class="row"><label>Require room before entry</label><input type="checkbox" id="minRoomFilterOn" checked></div>
+    <small class="hint">A strong momentum candle often fires right as price arrives at a recent high/low — that's how those levels became significant in the first place. This skips entries with too little room left before hitting the nearest level, which is usually a stall/rejection risk and leaves almost no distance to the take-profit target (that near-zero room is what can make an ordinary wiggle feel like an instant drawdown). Applies to every entry type in both strategies.</small>
+    <div class="row"><label>Minimum room (× ATR)</label><input type="number" id="minRoomAtrMult" value="1.0" min="0.1" step="0.1"></div>
   </fieldset>
 
   <fieldset>
     <legend>Risk (initial stop-loss/take-profit — auto-scales via ATR across forex, NAS100, US30, gold, etc.)</legend>
-    <small class="hint">ATR just means "how big this market's normal price wiggles are right now." These set the INITIAL stop-loss/take-profit at trade open. Trailing/breakeven behavior is controlled by the dollar-based Auto Trailing settings above, not these.</small>
+    <small class="hint">ATR just means "how big this market's normal price wiggles are right now." These set the INITIAL stop-loss/take-profit at trade open for the Original strategy (FVG uses its own gap-based stop above, but still uses this take-profit cap). Trailing/breakeven behavior is controlled by the dollar-based Auto Trailing settings above, not these.</small>
     <div class="row"><label>Stop-loss (× ATR)</label><input type="number" id="slAtrMult" value="2.0" min="0.2" step="0.1"></div>
     <small class="hint">How far the safety-net stop sits from your entry. Higher = more room for normal noise, but a bigger loss if it's wrong.</small>
     <div class="row"><label>Take-profit cap (× ATR, 0=off)</label><input type="number" id="tpAtrMult" value="4" min="0" step="0.5"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Volatility-Adjusted Risk (Original strategy only, auto per-instrument)</legend>
+    <small class="hint">OFF by default. When set to a sensitivity level, this automatically widens or tightens BOTH the Stop-loss and Take-profit cap above, together, based on how volatile the currently-loaded instrument actually is — a genuinely volatile pair like GBP/JPY gets more room, a calm one gets less, recalculated fresh every time you press Start. No pair list to maintain, and because both numbers always move together, your reward-to-risk ratio never quietly breaks the way it would if you widened just the stop by hand.</small>
+    <div class="row"><label>Sensitivity</label>
+      <select id="volSensitivity">
+        <option value="off" selected>Off</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium (recommended for volatile pairs)</option>
+        <option value="high">High</option>
+      </select>
+    </div>
+    <small class="hint">Low = small adjustment. Medium = a solid default for a genuinely volatile pair like GBP/JPY. High = the strongest adjustment, for the most volatile instruments you trade.</small>
+    <div class="row"><label>Customize the numbers behind this</label><input type="checkbox" id="volCustomToggle"></div>
+    <div id="volCustomFields" style="display:none;">
+      <small class="hint">Only for anyone who wants to fine-tune exactly how this works. Everyone else — the Sensitivity dropdown above already handles this for you, nothing below needs to be touched.</small>
+      <div class="row"><label>Calm threshold (ATR % of price)</label><input type="number" id="volCalmThreshold" value="0.05" min="0.01" step="0.01"></div>
+      <div class="row"><label>Aggressive threshold (ATR % of price)</label><input type="number" id="volAggressiveThreshold" value="0.15" min="0.01" step="0.01"></div>
+      <small class="hint">These measure ATR as a percentage of the current price — a scale-independent way to compare a $2,000 gold instrument to a 190-yen forex cross fairly. At or below the calm threshold, the "calm factor" applies; at or above the aggressive threshold, the "aggressive factor" applies; in between, it blends smoothly.</small>
+      <div class="row"><label>Calm pair factor</label><input type="number" id="volCalmFactor" value="1.0" min="0.3" step="0.05"></div>
+      <div class="row"><label>Aggressive pair factor</label><input type="number" id="volAggressiveFactor" value="1.0" min="1.0" step="0.05"></div>
+      <small class="hint">Values shown reflect the Sensitivity preset above until you edit them — pick a preset first, then fine-tune here if you want to go further.</small>
+      <small class="hint">The calm factor slightly tightens both multiples on quiet instruments; the aggressive factor widens both on genuinely volatile ones. 1.0 = no change from your base Stop-loss/Take-profit values above.</small>
+    </div>
   </fieldset>
 
   </div><!-- /advancedSection -->
@@ -456,12 +540,30 @@ var circuitBreakerTripped = false;
 var forceCloseQueue = {}; // orderId -> { attempts, nextRetryAt }
 var FORCE_CLOSE_MIN_INTERVAL_MS = 4000; // never retry the same order more than once per ~4s
 
+// Global throttle shared across EVERY background management SendOrder call — force-closes,
+// breakeven, trailing, missing-SL/TP fill-in — regardless of which order it's for. Per-order
+// backoff alone isn't enough: if several orders are all failing at once (e.g. a broker-side
+// outage), each one's own 4s cooldown still lets multiple DIFFERENT orders retry in the same
+// moment, and if the platform's own trading permission is set to "Confirm" rather than "Allow",
+// every one of those pops its own dialog — that's what actually produces a burst of 20-30
+// popups landing close together. This makes sure background attempts are spaced out one at a
+// time, account-wide, so they can't cluster into that burst even when multiple orders are stuck.
+var lastGlobalMgmtAttemptAt = 0;
+var GLOBAL_MGMT_MIN_INTERVAL_MS = 2000;
+function globalMgmtThrottleOk() {
+  var now = Date.now();
+  if (now - lastGlobalMgmtAttemptAt < GLOBAL_MGMT_MIN_INTERVAL_MS) return false;
+  lastGlobalMgmtAttemptAt = now;
+  return true;
+}
+
 function attemptForceCloses() {
   var now = Date.now();
   var ids = Object.keys(forceCloseQueue);
   ids.forEach(function (orderId) {
     var entry = forceCloseQueue[orderId];
     if (entry.nextRetryAt && now < entry.nextRetryAt) return; // still cooling down from the last attempt
+    if (!globalMgmtThrottleOk()) return; // another order's attempt just went out — wait for the shared window
 
     var order = Framework.Orders.get(orderId);
     if (!order || order.closeTime) {
@@ -488,7 +590,7 @@ function attemptForceCloses() {
         log("Could not close order " + orderId + " (" + urgency + "): " + errText, "log-warn");
         if (entry.attempts === 3) beep("sell"); // extra alert if it's genuinely stuck, not just a one-off blip
       }
-    });
+    }, { confirm: false });
   });
 }
 
@@ -593,19 +695,22 @@ function log(msg, cls) {
 
 // ---- UI helpers --------------------------------------------------
 function setInputsDisabled(disabled) {
-  var ids = ["instrumentId","modeSelect","accountSizeSelect","timeframe","pivotTf","fastLen","midLen","slowLen","atrMult",
+  var ids = ["instrumentId","strategySelect","modeSelect","accountSizeSelect","timeframe","pivotTf","fastLen","midLen","slowLen","atrMult",
+    "fvgMinGapAtrMult","fvgRequireReaction","fvgMaxBarsActive","fvgStopBufferAtrMult",
+    "sdMaxBaseCandles","sdBaseMaxRangeAtrMult","sdBreakoutMinAtrMult","sdRequireReaction","sdMaxRetests","sdMaxBarsActive","sdStopBufferAtrMult",
     "baseLots","enableAddOns","addOnLots","maxAddOns","enableRetest","retestLots",
-    "cooldownBars","requirePivotSide","maxEntriesPerDay","newsBlackoutOn","newsBlackoutTimes","newsBlackoutMinutes","reversalModeOn","reversalAtrMult","reversalConfirmBars","reversalMaxAddOns","dailyProfitTarget","dailyMaxLoss","closeOnCircuitBreak",
-    "useLevelTP","enableLevelRetest","levelRetestLots",
+    "cooldownBars","requirePivotSide","maxEntriesPerDay","newsBlackoutOn","newsBlackoutTimes","newsBlackoutMinutes","reversalModeOn","reversalAtrMult","reversalConfirmBars","reversalMaxAddOns","dailyProfitTarget","dailyMaxLoss","closeOnCircuitBreak","autoTradingOn",
+    "useLevelTP","enableLevelRetest","levelRetestLots","minRoomFilterOn","minRoomAtrMult",
     "sizingMode","baseRiskPct","addOnRiskPct","retestRiskPct","levelRetestRiskPct","hardMaxLot",
     "addStopLoss","addTakeProfit","autoTrailingOn","trailAfterProfitDollars","profitLockDistanceDollars","breakevenBufferDollars",
-    "slAtrMult","tpAtrMult","confirmOrders"];
+    "slAtrMult","tpAtrMult","volSensitivity","volCustomToggle","volCalmThreshold","volAggressiveThreshold","volCalmFactor","volAggressiveFactor","confirmOrders"];
   ids.forEach(function(id) { document.getElementById(id).disabled = disabled; });
 }
 
 function setStatus(running, stoppedLabel) {
   var el = document.getElementById("status");
-  el.textContent = running ? "● Bot Running — " + cfg.instrumentId : ("● " + (stoppedLabel || "Bot Stopped"));
+  var autoLabel = (running && cfg && !cfg.autoTradingOn) ? " (Manual mode)" : "";
+  el.textContent = running ? "● Bot Running" + autoLabel + " — " + cfg.instrumentId : ("● " + (stoppedLabel || "Bot Stopped"));
   el.className = running ? "running" : "stopped";
   document.getElementById("startBtn").disabled = running;
   document.getElementById("stopBtn").disabled = !running;
@@ -614,6 +719,7 @@ function setStatus(running, stoppedLabel) {
 function readConfig() {
   return {
     instrumentId: document.getElementById("instrumentId").value.trim(),
+    strategy: document.getElementById("strategySelect").value,
     mode: document.getElementById("modeSelect").value,
     accountSize: document.getElementById("accountSizeSelect").value,
     timeframe: parseInt(document.getElementById("timeframe").value),
@@ -622,6 +728,17 @@ function readConfig() {
     midLen: parseInt(document.getElementById("midLen").value) || 13,
     slowLen: parseInt(document.getElementById("slowLen").value) || 34,
     atrMult: parseFloat(document.getElementById("atrMult").value) || 0.2,
+    fvgMinGapAtrMult: parseFloat(document.getElementById("fvgMinGapAtrMult").value) || 0.3,
+    fvgRequireReaction: document.getElementById("fvgRequireReaction").checked,
+    fvgMaxBarsActive: parseInt(document.getElementById("fvgMaxBarsActive").value) || 50,
+    fvgStopBufferAtrMult: parseFloat(document.getElementById("fvgStopBufferAtrMult").value) || 0.2,
+    sdMaxBaseCandles: parseInt(document.getElementById("sdMaxBaseCandles").value) || 3,
+    sdBaseMaxRangeAtrMult: parseFloat(document.getElementById("sdBaseMaxRangeAtrMult").value) || 0.5,
+    sdBreakoutMinAtrMult: parseFloat(document.getElementById("sdBreakoutMinAtrMult").value) || 0.8,
+    sdRequireReaction: document.getElementById("sdRequireReaction").checked,
+    sdMaxRetests: parseInt(document.getElementById("sdMaxRetests").value) || 2,
+    sdMaxBarsActive: parseInt(document.getElementById("sdMaxBarsActive").value) || 80,
+    sdStopBufferAtrMult: parseFloat(document.getElementById("sdStopBufferAtrMult").value) || 0.2,
     baseLots: parseFloat(document.getElementById("baseLots").value) || 0.10,
     sizingMode: document.getElementById("sizingMode").value,
     baseRiskPct: parseFloat(document.getElementById("baseRiskPct").value) || 1.0,
@@ -647,11 +764,20 @@ function readConfig() {
     dailyProfitTarget: parseFloat(document.getElementById("dailyProfitTarget").value) || 0,
     dailyMaxLoss: parseFloat(document.getElementById("dailyMaxLoss").value) || 0,
     closeOnCircuitBreak: document.getElementById("closeOnCircuitBreak").checked,
+    autoTradingOn: document.getElementById("autoTradingOn").value === "on",
     useLevelTP: document.getElementById("useLevelTP").checked,
     enableLevelRetest: document.getElementById("enableLevelRetest").checked,
     levelRetestLots: parseFloat(document.getElementById("levelRetestLots").value) || 0.05,
+    minRoomFilterOn: document.getElementById("minRoomFilterOn").checked,
+    minRoomAtrMult: parseFloat(document.getElementById("minRoomAtrMult").value) || 1.0,
     slAtrMult: parseFloat(document.getElementById("slAtrMult").value) || 2.0,
     tpAtrMult: parseFloat(document.getElementById("tpAtrMult").value) || 0,
+    volSensitivity: document.getElementById("volSensitivity").value,
+    volAdjustOn: document.getElementById("volSensitivity").value !== "off",
+    volCalmThreshold: parseFloat(document.getElementById("volCalmThreshold").value) || 0.05,
+    volAggressiveThreshold: parseFloat(document.getElementById("volAggressiveThreshold").value) || 0.15,
+    volCalmFactor: parseFloat(document.getElementById("volCalmFactor").value) || 0.9,
+    volAggressiveFactor: parseFloat(document.getElementById("volAggressiveFactor").value) || 1.6,
     addStopLoss: document.getElementById("addStopLoss").value === "on",
     addTakeProfit: document.getElementById("addTakeProfit").value === "on",
     autoTrailingOn: document.getElementById("autoTrailingOn").value === "on",
@@ -665,14 +791,19 @@ function readConfig() {
 function applyConfigToUI(s) {
   if (!s) return;
   var map = ["instrumentId","timeframe","pivotTf","fastLen","midLen","slowLen","atrMult",
+    "fvgMinGapAtrMult","fvgMaxBarsActive","fvgStopBufferAtrMult",
+    "sdMaxBaseCandles","sdBaseMaxRangeAtrMult","sdBreakoutMinAtrMult","sdMaxRetests","sdMaxBarsActive","sdStopBufferAtrMult",
     "baseLots","addOnLots","maxAddOns","retestLots","cooldownBars","levelRetestLots","maxEntriesPerDay",
     "newsBlackoutTimes","newsBlackoutMinutes","reversalAtrMult","reversalConfirmBars","reversalMaxAddOns",
     "baseRiskPct","addOnRiskPct","retestRiskPct","levelRetestRiskPct","hardMaxLot","dailyProfitTarget","dailyMaxLoss",
-    "trailAfterProfitDollars","profitLockDistanceDollars","breakevenBufferDollars","slAtrMult","tpAtrMult"];
+    "trailAfterProfitDollars","profitLockDistanceDollars","breakevenBufferDollars","slAtrMult","tpAtrMult","minRoomAtrMult",
+    "volCalmThreshold","volAggressiveThreshold","volCalmFactor","volAggressiveFactor"];
   map.forEach(function(k) { if (s[k] !== undefined) document.getElementById(k).value = s[k]; });
+  if (s.strategy !== undefined && s.strategy) document.getElementById("strategySelect").value = s.strategy;
   if (s.mode !== undefined) document.getElementById("modeSelect").value = s.mode;
   if (s.accountSize !== undefined && s.accountSize) document.getElementById("accountSizeSelect").value = s.accountSize;
   if (s.closeOnCircuitBreak !== undefined) document.getElementById("closeOnCircuitBreak").checked = s.closeOnCircuitBreak;
+  if (s.autoTradingOn !== undefined) document.getElementById("autoTradingOn").value = s.autoTradingOn ? "on" : "off";
   if (s.sizingMode !== undefined) document.getElementById("sizingMode").value = s.sizingMode;
   if (s.newsBlackoutOn !== undefined) document.getElementById("newsBlackoutOn").value = s.newsBlackoutOn ? "on" : "off";
   if (s.reversalModeOn !== undefined) document.getElementById("reversalModeOn").value = s.reversalModeOn ? "on" : "off";
@@ -681,6 +812,10 @@ function applyConfigToUI(s) {
   if (s.requirePivotSide !== undefined) document.getElementById("requirePivotSide").checked = s.requirePivotSide;
   if (s.useLevelTP !== undefined) document.getElementById("useLevelTP").checked = s.useLevelTP;
   if (s.enableLevelRetest !== undefined) document.getElementById("enableLevelRetest").checked = s.enableLevelRetest;
+  if (s.minRoomFilterOn !== undefined) document.getElementById("minRoomFilterOn").checked = s.minRoomFilterOn;
+  if (s.fvgRequireReaction !== undefined) document.getElementById("fvgRequireReaction").checked = s.fvgRequireReaction;
+  if (s.volSensitivity !== undefined) document.getElementById("volSensitivity").value = s.volSensitivity;
+  if (s.sdRequireReaction !== undefined) document.getElementById("sdRequireReaction").checked = s.sdRequireReaction;
   if (s.confirmOrders !== undefined) document.getElementById("confirmOrders").checked = s.confirmOrders;
   if (s.addStopLoss !== undefined) document.getElementById("addStopLoss").value = s.addStopLoss ? "on" : "off";
   if (s.addTakeProfit !== undefined) document.getElementById("addTakeProfit").value = s.addTakeProfit ? "on" : "off";
@@ -693,18 +828,24 @@ function applyConfigToUI(s) {
 // not an approximation. Falls back to the fixed-lot value on anything unexpected
 // (missing instrument data, zero ATR, etc.) so a data gap never blocks a trade or,
 // worse, sizes one wildly wrong.
-function computeLotSize(fixedLots, riskPct, atrAtEntry) {
+//
+// stopDistancePrice lets a caller (like the FVG strategy, whose stop is measured from the gap
+// boundary, not a flat ATR multiple from entry) supply the REAL stop distance being used for
+// this specific trade, so risk sizing reflects what will actually be risked — not a generic
+// approximation. Falls back to atrAtEntry × slAtrMult (the Original strategy's own math) when
+// not supplied, so nothing changes for existing callers.
+function computeLotSize(fixedLots, riskPct, atrAtEntry, stopDistancePrice) {
   if (cfg.sizingMode !== "risk") return fixedLots;
   if (!cfg.addStopLoss) {
     log("Risk % sizing needs a stop-loss to size against — Add Stop-Loss is OFF, so using fixed lots (" + fixedLots + ") instead for this trade.", "log-warn");
     return fixedLots;
   }
-  if (!atrAtEntry || cfg.slAtrMult <= 0) return fixedLots;
+  var slDistancePrice = stopDistancePrice || (atrAtEntry ? atrAtEntry * cfg.slAtrMult : 0);
+  if (!slDistancePrice || slDistancePrice <= 0) return fixedLots;
 
   var instr = Framework.Instruments.get(cfg.instrumentId);
   if (!instr || !instr.tickSize || !instr.tickValue) return fixedLots;
 
-  var slDistancePrice = atrAtEntry * cfg.slAtrMult;
   var slDistanceTicks = slDistancePrice / instr.tickSize;
   var lossPerLot = slDistanceTicks * instr.tickValue; // $ lost per 1.0 lot if SL is hit
   if (!lossPerLot || lossPerLot <= 0) return fixedLots;
@@ -753,6 +894,28 @@ function computeLotSize(fixedLots, riskPct, atrAtEntry) {
 }
 
 // ---- Mode presets — Scalper / Swing set the underlying advanced fields at once ----
+function strategyDisplayName(strategy) {
+  if (strategy === "fvg") return "Fair Value Gap (FVG)";
+  if (strategy === "sd") return "Supply & Demand Zones";
+  return "Original (Trend + Momentum)";
+}
+
+// ---- Volatility sensitivity presets — hides the raw threshold/factor numbers behind one
+// simple dropdown, same pattern as Mode and Account Size. "off" turns the whole feature off.
+var VOL_SENSITIVITY_PRESETS = {
+  off:    { calmThreshold: 0.05, aggressiveThreshold: 0.15, calmFactor: 1.0,  aggressiveFactor: 1.0 },
+  low:    { calmThreshold: 0.05, aggressiveThreshold: 0.20, calmFactor: 0.95, aggressiveFactor: 1.25 },
+  medium: { calmThreshold: 0.05, aggressiveThreshold: 0.15, calmFactor: 0.9,  aggressiveFactor: 1.6 },
+  high:   { calmThreshold: 0.05, aggressiveThreshold: 0.12, calmFactor: 0.85, aggressiveFactor: 2.0 }
+};
+function applyVolSensitivityPreset(level) {
+  var p = VOL_SENSITIVITY_PRESETS[level] || VOL_SENSITIVITY_PRESETS.off;
+  document.getElementById("volCalmThreshold").value = p.calmThreshold;
+  document.getElementById("volAggressiveThreshold").value = p.aggressiveThreshold;
+  document.getElementById("volCalmFactor").value = p.calmFactor;
+  document.getElementById("volAggressiveFactor").value = p.aggressiveFactor;
+}
+
 var MODE_PRESETS = {
   scalper: { timeframe: 300,  pivotTf: 86400,  slAtrMult: 1.5, tpAtrMult: 3, cooldownBars: 1, maxAddOns: 4, requirePivotSide: false, atrMult: 0.2 },
   swing:   { timeframe: 3600, pivotTf: 604800, slAtrMult: 2.5, tpAtrMult: 6, cooldownBars: 1, maxAddOns: 3, requirePivotSide: false, atrMult: 0.2 }
@@ -836,7 +999,11 @@ function closeAllOpposite(oppositeDirection, callback) {
   });
 }
 
-function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride, currentPrice) {
+// slPriceOverride lets a caller (the FVG strategy) supply an exact stop-loss PRICE, computed
+// from the gap boundary rather than a flat ATR multiple from entry — the gap's own edge is what
+// actually invalidates that setup, not a generic distance. Original strategy callers don't pass
+// this, so their existing ATR-multiple-from-current-price behavior is completely unchanged.
+function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride, currentPrice, slPriceOverride) {
   if (!lots || lots <= 0) return; // computeLotSize already logged why, if this was a risk-sizing refusal
   if (pendingOrder) { log("Skipped " + direction + " (" + reason + ") — previous order still in flight", "log-warn"); return; }
   if (!dailyCapOk()) { log("Skipped " + direction + " (" + reason + ") — daily entry cap (" + cfg.maxEntriesPerDay + ") reached", "log-warn"); return; }
@@ -853,14 +1020,17 @@ function placeOrder(direction, lots, reason, atrAtEntry, tpPriceOverride, curren
 
   var isLong = direction === "buy";
 
-  // Stop-loss: only set when "Add Stop-Loss" is ON. Computed as a direct absolute price from the
-  // current close, not a pip count — this removes the instrument pipSize entirely from this
-  // calculation, which is what previously let a broker-data delay at the exact moment of entry
-  // distort the stop distance into something invalid. A price is a price; there's no unit
-  // conversion left to get wrong.
-  if (cfg.addStopLoss && atrAtEntry && currentPrice && cfg.slAtrMult > 0) {
-    var slDist = atrAtEntry * cfg.slAtrMult;
-    req.sl = isLong ? (currentPrice - slDist) : (currentPrice + slDist);
+  // Stop-loss: only set when "Add Stop-Loss" is ON. Computed as a direct absolute price — either
+  // the caller's own override (FVG's gap-boundary stop), or the current close minus an ATR
+  // multiple (Original strategy's default) — never a pip count, which removes the instrument
+  // pipSize entirely from this calculation.
+  if (cfg.addStopLoss) {
+    if (slPriceOverride) {
+      req.sl = slPriceOverride;
+    } else if (atrAtEntry && currentPrice && cfg.slAtrMult > 0) {
+      var slDist = atrAtEntry * cfg.slAtrMult;
+      req.sl = isLong ? (currentPrice - slDist) : (currentPrice + slDist);
+    }
   }
 
   // Take-profit: only set when "Add Take-Profit" is ON. Prefers a real structural level (R1/S1/
@@ -965,17 +1135,36 @@ var tradeLog = []; // { time, instrument, direction, lots, profit }
 Framework.OnOrderClose = function (closedOrder) {
   if (closedOrder && managedOrders[closedOrder.orderId]) {
     var m = managedOrders[closedOrder.orderId];
+    var profit = (typeof closedOrder.profit === "number") ? closedOrder.profit : null;
+
+    // Fallback: the broker's profit field can occasionally not be populated yet at the exact
+    // instant this close event fires. Rather than silently show nothing for that trade in the
+    // Performance panel, compute it ourselves from open/close price and lot size — the same
+    // tickSize/tickValue conversion already relied on elsewhere for risk sizing and trailing.
+    if (profit === null && typeof closedOrder.openPrice === "number" && typeof closedOrder.closePrice === "number" && m.lots) {
+      var instr = Framework.Instruments.get(cfg ? cfg.instrumentId : closedOrder.instrumentId);
+      if (instr && instr.tickSize && instr.tickValue) {
+        var isLong = m.direction === "buy";
+        var priceDist = isLong ? (closedOrder.closePrice - closedOrder.openPrice) : (closedOrder.openPrice - closedOrder.closePrice);
+        profit = (priceDist / instr.tickSize) * instr.tickValue * m.lots;
+      }
+    }
+
     tradeLog.push({
       time: new Date().toLocaleString(),
       dayKey: currentDayKey(),
       instrument: closedOrder.instrumentId || (cfg && cfg.instrumentId) || "",
       direction: m.direction,
       lots: (typeof closedOrder.volume === "number" && m.lots) ? m.lots : "",
-      profit: (typeof closedOrder.profit === "number") ? closedOrder.profit : null
+      profit: profit
     });
     refreshStatsDisplay();
     delete managedOrders[closedOrder.orderId];
-    log("Order " + closedOrder.orderId + " closed — stopped managing it", "log-info");
+    if (profit === null) {
+      log("Order " + closedOrder.orderId + " closed but profit couldn't be determined — it won't count toward Win Rate/Net P/L. Check your account's own trade history for this one's actual result.", "log-warn");
+    } else {
+      log("Order " + closedOrder.orderId + " closed — stopped managing it", "log-info");
+    }
   }
 };
 
@@ -1038,13 +1227,6 @@ Framework.OnAccountMetrics = function () {
   }
 };
 
-// ---- Breakeven + ATR trailing on every managed open trade ------------
-// ---- Auto Trailing (dollar-based) on every managed open trade ------------
-// When Auto Trailing is OFF, trades keep exactly the SL/TP they were opened with — nothing
-// here touches them at all. When ON, this converts each trade's floating profit into dollars
-// (using the per-trade dollarPerPriceUnit computed at open) and compares it against your
-// "Trail After Profit" / "Profit Lock Distance" dollar settings, rather than ATR multiples —
-// simpler to reason about, at the cost of needing to be tuned to your account/instrument.
 // ---- Add a missing initial stop-loss/take-profit to a managed trade that doesn't have one ----
 // This runs for trades re-adopted at Start that were placed without SL/TP (e.g. a manual entry
 // with nothing attached) — it does NOT touch trades that already have their own SL/TP, bot-placed
@@ -1056,6 +1238,7 @@ function applyMissingInitialRisk(atrV) {
     var m = managedOrders[orderId];
     if (!m.needsInitialRisk) return;
     if (m.mgmtRetryAt && Date.now() < m.mgmtRetryAt) return; // cooling down from a recent failed attempt
+    if (!globalMgmtThrottleOk()) return; // another order's attempt just went out — wait for the shared window
     var order = Framework.Orders.get(orderId);
     if (!order || order.closeTime) { delete managedOrders[orderId]; return; }
 
@@ -1089,7 +1272,7 @@ function applyMissingInitialRisk(atrV) {
         log("⚠️ Couldn't add SL/TP to order " + orderId + ": " + errText + " — still unprotected, retrying.", "log-warn");
         m.mgmtRetryAt = Date.now() + 4000; // cool down, then retry — do NOT give up
       }
-    });
+    }, { confirm: false });
   });
 }
 
@@ -1182,6 +1365,7 @@ function manageOpenTrades(currentAtr) {
         m.breakevenApplied = true; // current stop is already at least as good — nothing to do, just mark this step done
         return;
       }
+      if (!globalMgmtThrottleOk()) return; // another order's attempt just went out — wait for the shared window, retry next tick
 
       Framework.SendOrder({
         instrumentId: order.instrumentId,
@@ -1199,7 +1383,7 @@ function manageOpenTrades(currentAtr) {
           log("Order " + orderId + " breakeven update failed: " + beErrText, "log-warn");
           m.mgmtRetryAt = Date.now() + 4000; // cool down before retrying this order again
         }
-      });
+      }, { confirm: false });
       return; // don't also trail on the same bar as the breakeven move
     }
 
@@ -1222,7 +1406,7 @@ function manageOpenTrades(currentAtr) {
       var currentSl = order.sl;
       var improves = isLong ? (!currentSl || desiredSl > currentSl) : (!currentSl || desiredSl < currentSl);
 
-      if (improves) {
+      if (improves && globalMgmtThrottleOk()) {
         Framework.SendOrder({
           instrumentId: order.instrumentId,
           orderId: orderId,
@@ -1239,7 +1423,7 @@ function manageOpenTrades(currentAtr) {
             log("Order " + orderId + " trailing stop update FAILED: " + errText, "log-warn");
             m.mgmtRetryAt = Date.now() + 4000; // cool down before retrying this order again
           }
-        });
+        }, { confirm: false });
       }
     }
   });
@@ -1298,8 +1482,42 @@ function supportLadder(lv) {
   return [lv.S1, lv.fib382S, lv.S2, lv.fib618S, lv.S3].sort(function(a,b){ return b-a; }); // descending
 }
 
-function structuralTPMaxDistance(atr) {
-  return (cfg.tpAtrMult > 0 && atr) ? atr * cfg.tpAtrMult : undefined; // undefined = no cap
+// Scales the base Stop-loss/Take-profit ATR multiples by how volatile the currently-loaded
+// instrument actually is RIGHT NOW, measured as ATR relative to its own price (a scale-
+// independent comparison — this is what lets a $2,000 gold instrument and a 190-yen forex cross
+// be compared fairly on the same scale, with no hardcoded per-pair list to maintain). Below the
+// calm threshold, the calm factor applies; above the aggressive threshold, the aggressive
+// factor applies; in between, it blends smoothly rather than jumping at a hard cutoff. Both SL
+// and TP always scale by the exact same factor, so the reward-to-risk ratio set by the base
+// Stop-loss/Take-profit values never quietly changes — only their overall size does, together.
+function getVolatilityAdjustedMultipliers(atrV, price) {
+  if (!cfg.volAdjustOn || !atrV || !price || price <= 0) {
+    return { sl: cfg.slAtrMult, tp: cfg.tpAtrMult, factor: 1, relVol: null };
+  }
+  var relVol = (atrV / price) * 100;
+  var calmT = cfg.volCalmThreshold;
+  var aggT = cfg.volAggressiveThreshold;
+  var calmF = cfg.volCalmFactor;
+  var aggF = cfg.volAggressiveFactor;
+
+  var factor;
+  if (aggT <= calmT) {
+    factor = relVol >= calmT ? aggF : calmF; // malformed thresholds — fail toward the safer/simpler binary read rather than divide by zero
+  } else if (relVol <= calmT) {
+    factor = calmF;
+  } else if (relVol >= aggT) {
+    factor = aggF;
+  } else {
+    var t = (relVol - calmT) / (aggT - calmT);
+    factor = calmF + t * (aggF - calmF);
+  }
+
+  return { sl: cfg.slAtrMult * factor, tp: cfg.tpAtrMult * factor, factor: factor, relVol: relVol };
+}
+
+function structuralTPMaxDistance(atr, tpMultOverride) {
+  var mult = (tpMultOverride !== undefined) ? tpMultOverride : cfg.tpAtrMult;
+  return (mult > 0 && atr) ? atr * mult : undefined; // undefined = no cap
 }
 
 // Nearest structural level beyond the current close, in the trade's direction — used as TP.
@@ -1322,11 +1540,190 @@ function nearestStructuralTP(direction, closePrice, lv, maxDistance) {
   return null;
 }
 
+// Checks there's genuine room between current price and the nearest structural level ahead of
+// it (resistance for a buy, support for a sell) before allowing an entry. Momentum candles —
+// the exact thing the primary signal hunts for — tend to cluster right where price arrives at a
+// recent high/low, since that's how those levels got defined as significant in the first place.
+// Firing an entry with no room left before hitting that level produces two problems at once:
+// a high chance of an immediate stall/rejection, and (since the TP target is the same nearest
+// level) almost no distance between entry and target, so ordinary noise reads as a sharp
+// drawdown relative to how little room the trade had to begin with. Fails OPEN (returns true,
+// doesn't block) whenever the filter is off or there isn't enough data to check against — this
+// is an added quality filter, not a new hard requirement the bot can get stuck waiting on.
+function hasRoomToNextLevel(direction, closePrice, lv, atrV) {
+  if (!cfg.minRoomFilterOn) return true;
+  if (!lv || !atrV) return true;
+  var nearestLevel = nearestStructuralTP(direction, closePrice, lv, undefined); // no cap — the true nearest level
+  if (nearestLevel === null) return true; // no level found ahead in this direction — nothing to be too close to
+  var room = Math.abs(nearestLevel - closePrice);
+  var minRoom = atrV * cfg.minRoomAtrMult;
+  return room >= minRoom;
+}
+
+// ================= FVG (Fair Value Gap) strategy ==========================================
+// A Fair Value Gap is a 3-candle imbalance: candle 1 and candle 3 don't overlap, leaving an
+// untouched price zone in the middle (candle 2 is the one that "gapped" through). This is
+// completely separate from the Original strategy's EMA-trend logic — it only runs when
+// cfg.strategy === "fvg", and shares nothing with the Original strategy's entry code. It DOES
+// share every safety/management system downstream of placeOrder() — sizing, SL/TP, Auto
+// Trailing, breakeven, the Daily circuit breaker, the hard lot cap — since those all operate on
+// the trade after it's placed, regardless of which strategy generated it.
+var activeFVGs = []; // { top, bottom, direction, barsActive }
+var FVG_LIST_CAP = 30; // hard cap so this can never grow unbounded across a long session
+
+// Scans the last 3 closed bars for a brand-new gap. Called once per bar, only when the FVG
+// strategy is selected.
+function scanForNewFVG(store, atrV) {
+  if (!store || store.length < 4) return;
+  var c1 = store.GetCandle(3); // oldest of the 3
+  var c3 = store.GetCandle(1); // most recent closed
+  if (!c1 || !c3) return;
+
+  var minGap = (cfg.fvgMinGapAtrMult || 0) * atrV;
+  if (!minGap || minGap <= 0) return;
+
+  // Bullish FVG: candle 1's high sits below candle 3's low — untouched zone in between
+  if (c1.h < c3.l && (c3.l - c1.h) >= minGap) {
+    activeFVGs.push({ top: c3.l, bottom: c1.h, direction: "buy", barsActive: 0 });
+    log("FVG detected: bullish gap " + c1.h.toFixed(5) + " – " + c3.l.toFixed(5) + " on " + cfg.instrumentId, "log-info");
+  }
+  // Bearish FVG: candle 1's low sits above candle 3's high — untouched zone in between
+  if (c1.l > c3.h && (c1.l - c3.h) >= minGap) {
+    activeFVGs.push({ top: c1.l, bottom: c3.h, direction: "sell", barsActive: 0 });
+    log("FVG detected: bearish gap " + c3.h.toFixed(5) + " – " + c1.l.toFixed(5) + " on " + cfg.instrumentId, "log-info");
+  }
+
+  if (activeFVGs.length > FVG_LIST_CAP) activeFVGs = activeFVGs.slice(activeFVGs.length - FVG_LIST_CAP);
+}
+
+// Ages every tracked gap, drops expired/invalidated ones, and checks whether the current bar's
+// retest into an active gap qualifies as an entry trigger (with or without requiring a genuine
+// reaction candle there, per settings). Returns at most one buy trigger and one sell trigger per
+// bar — the earliest-formed qualifying gap in each direction, consumed once triggered so the
+// same gap can't fire twice.
+function updateAndCheckFVGs(candle) {
+  var triggeredBuy = null, triggeredSell = null;
+  var maxBars = cfg.fvgMaxBarsActive || 50;
+
+  activeFVGs = activeFVGs.filter(function (fvg) {
+    fvg.barsActive++;
+    if (fvg.barsActive > maxBars) return false; // stale — never retested in a reasonable window, drop it
+
+    var enteredZone = candle.l <= fvg.top && candle.h >= fvg.bottom; // this candle traded into the gap
+    if (!enteredZone) return true; // still active, untouched this bar
+
+    if (fvg.direction === "buy") {
+      var reactionOk = !cfg.fvgRequireReaction || (candle.c > candle.o && candle.c >= fvg.bottom);
+      if (reactionOk && !triggeredBuy) { triggeredBuy = fvg; return false; } // consumed
+      var fullyFilledBull = candle.c < fvg.bottom;
+      return !fullyFilledBull; // closed fully through it without reacting — invalidated, drop; otherwise keep for next bar
+    } else {
+      var reactionOkS = !cfg.fvgRequireReaction || (candle.c < candle.o && candle.c <= fvg.top);
+      if (reactionOkS && !triggeredSell) { triggeredSell = fvg; return false; } // consumed
+      var fullyFilledBear = candle.c > fvg.top;
+      return !fullyFilledBear;
+    }
+  });
+
+  return { triggeredBuy: triggeredBuy, triggeredSell: triggeredSell };
+}
+
 // ---- Core signal + trading logic, called on each new closed bar -----
 // Reads a current ATR value directly from the live candle store — safe to call any time,
 // not just on a bar close, since tradingStore's calculations stay current between bar events.
 // This is what lets trade protection (missing SL/TP, breakeven, trailing) react instantly to a
 // real-time account update instead of waiting for the next candle to close.
+// ================= Supply & Demand Zones strategy =========================================
+// Looks for a tight consolidation ("base") immediately followed by a strong breakout candle
+// away from it — the classic Rally-Base-Drop / Drop-Base-Rally pattern. The base area itself
+// becomes the zone. This is deliberately a DIFFERENT detection mechanism from FVG's precise
+// 3-candle gap — a multi-candle consolidation-then-breakout, not a fixed pattern — so the two
+// strategies actually behave differently, not just cosmetically. Only runs when
+// cfg.strategy === "sd", shares nothing with FVG's or Original's entry code, but shares every
+// safety/management system downstream of placeOrder() just like they do.
+var activeSDZones = []; // { top, bottom, direction, barsActive, timesTested }
+var SD_ZONE_LIST_CAP = 30;
+
+// Scans for a new base+breakout pattern ending at the just-closed bar. Called once per bar,
+// only when the Supply & Demand strategy is selected.
+function scanForNewSDZone(store, atrV) {
+  if (!store) return;
+  var breakoutCandle = store.GetCandle(1); // the just-closed bar is the candidate breakout candle
+  if (!breakoutCandle) return;
+  var breakoutRange = breakoutCandle.h - breakoutCandle.l;
+  if (breakoutRange <= 0) return;
+
+  var minBreakout = (cfg.sdBreakoutMinAtrMult || 0) * atrV;
+  if (!minBreakout || breakoutRange < minBreakout) return; // not a strong enough move to count as a breakout
+
+  var isBullBreakout = breakoutCandle.c > breakoutCandle.o && (breakoutCandle.c - breakoutCandle.l) / breakoutRange >= 0.5;
+  var isBearBreakout = breakoutCandle.c < breakoutCandle.o && (breakoutCandle.h - breakoutCandle.c) / breakoutRange >= 0.5;
+  if (!isBullBreakout && !isBearBreakout) return;
+
+  // Walk backward from the bar just before the breakout, collecting consecutive tight-range
+  // candles as the base. Stops at the first candle that's too wide to be part of a consolidation.
+  var maxBase = cfg.sdMaxBaseCandles || 3;
+  var maxBaseRange = (cfg.sdBaseMaxRangeAtrMult || 0) * atrV;
+  var baseHigh = -Infinity, baseLow = Infinity, baseCount = 0;
+  for (var k = 2; k <= maxBase + 1; k++) {
+    var bc = store.GetCandle(k);
+    if (!bc) break;
+    var bcRange = bc.h - bc.l;
+    if (bcRange > maxBaseRange) break; // too wide, not part of the base — base ends here
+    baseHigh = Math.max(baseHigh, bc.h);
+    baseLow = Math.min(baseLow, bc.l);
+    baseCount++;
+  }
+  if (baseCount === 0) return; // no valid consolidation immediately before the breakout candle
+
+  if (isBullBreakout) {
+    // Demand zone — price broke UP away from this base, expected to react bullishly if it returns.
+    activeSDZones.push({ top: baseHigh, bottom: baseLow, direction: "buy", barsActive: 0, timesTested: 0 });
+    log("Supply/Demand: demand zone " + baseLow.toFixed(5) + " – " + baseHigh.toFixed(5) + " on " + cfg.instrumentId, "log-info");
+  } else {
+    activeSDZones.push({ top: baseHigh, bottom: baseLow, direction: "sell", barsActive: 0, timesTested: 0 });
+    log("Supply/Demand: supply zone " + baseLow.toFixed(5) + " – " + baseHigh.toFixed(5) + " on " + cfg.instrumentId, "log-info");
+  }
+
+  if (activeSDZones.length > SD_ZONE_LIST_CAP) activeSDZones = activeSDZones.slice(activeSDZones.length - SD_ZONE_LIST_CAP);
+}
+
+// Ages every tracked zone, drops stale/violated/exhausted ones, and checks whether the current
+// bar's retest into a zone qualifies as an entry trigger. Unlike FVG's gaps (consumed on first
+// trigger), a zone can be retested multiple times — up to "Max retests before zone expires" —
+// which is the actual freshness/decay mechanic real supply/demand trading relies on.
+function updateAndCheckSDZones(candle) {
+  var triggeredBuy = null, triggeredSell = null;
+  var maxBars = cfg.sdMaxBarsActive || 80;
+  var maxRetests = cfg.sdMaxRetests || 2;
+
+  activeSDZones = activeSDZones.filter(function (zone) {
+    zone.barsActive++;
+    if (zone.barsActive > maxBars) return false; // never retested in a reasonable window — stale, drop it
+
+    var enteredZone = candle.l <= zone.top && candle.h >= zone.bottom;
+    if (!enteredZone) return true; // untouched this bar, keep watching
+
+    zone.timesTested++;
+
+    if (zone.direction === "buy") {
+      var reactionOk = !cfg.sdRequireReaction || (candle.c > candle.o && candle.c >= zone.bottom);
+      if (reactionOk && !triggeredBuy) triggeredBuy = zone;
+      if (candle.c < zone.bottom) return false; // price closed fully through it — demand failed, drop it
+    } else {
+      var reactionOkS = !cfg.sdRequireReaction || (candle.c < candle.o && candle.c <= zone.top);
+      if (reactionOkS && !triggeredSell) triggeredSell = zone;
+      if (candle.c > zone.top) return false; // supply failed, drop it
+    }
+
+    if (zone.timesTested >= maxRetests) return false; // this retest still counts as a valid trigger above — the zone just won't be tracked for a future one
+
+    return true; // survives for a future retest
+  });
+
+  return { triggeredBuy: triggeredBuy, triggeredSell: triggeredSell };
+}
+
 function getCurrentProtectionAtr() {
   if (!tradingStore || tradingStore.length < 2) return null;
   var protectAtr = tradingStore.ta[3]; // ATR(14)
@@ -1358,6 +1755,172 @@ function onNewTradingBar() {
     manageOpenTrades(earlyAtrV);
   }
 
+  // ---- Auto Trading off: everything above this line already ran — a missing stop-loss/take-
+  // profit still gets added to a manual trade, breakeven and trailing still manage it, and the
+  // Daily circuit breaker still protects it. This just stops any NEW trade from being opened —
+  // none of the strategy signal logic below even runs. This is the entire feature: nothing about
+  // trade management changes, only whether the bot is allowed to open something new itself.
+  if (!cfg.autoTradingOn) return;
+
+  // ---- FVG strategy runs on a much lighter data requirement (needs 4 bars, not 38) — handled
+  // entirely separately from the Original strategy's EMA-based signal logic below, which only
+  // ever runs when cfg.strategy === "original". Nothing here touches Original's variables, and
+  // nothing below touches these.
+  if (cfg.strategy === "fvg") {
+    if (tradingStore.length < 5) {
+      log("Waiting for history: " + tradingStore.length + "/5 bars loaded for " + cfg.instrumentId + " (FVG needs very little history to start).", "log-warn");
+      return;
+    }
+    var fvgCandle = tradingStore.GetCandle(1);
+    if (!fvgCandle) return;
+    var fvgAtr = tradingStore.ta[3].GetValue(1) || (fvgCandle.h - fvgCandle.l);
+    if (!fvgAtr || fvgAtr <= 0) return;
+
+    scanForNewFVG(tradingStore, fvgAtr);
+    var fvgResult = updateAndCheckFVGs(fvgCandle);
+    var fvgPivotLevels = getPivotLevels();
+    var fvgClose = fvgCandle.c;
+    var fvgPosition = Framework.Positions.getOrEmpty(cfg.instrumentId);
+
+    if (fvgPosition.positionType === FXB.PositionTypes.EMPTY) {
+      addOnsUsed.buy = 0; addOnsUsed.sell = 0;
+    }
+
+    Object.keys(barsSinceLastEntry).forEach(function (k) { barsSinceLastEntry[k]++; });
+
+    if (fvgResult.triggeredBuy) {
+      var fvgBuyRoomOk = hasRoomToNextLevel("buy", fvgClose, fvgPivotLevels, fvgAtr);
+      if (!fvgBuyRoomOk) {
+        log("FVG bullish gap-fill reaction triggered but skipped — too little room before the nearest resistance level.", "log-warn");
+      } else if (fvgPosition.positionType !== FXB.PositionTypes.SHORT && barsSinceLastEntry.buy > cfg.cooldownBars) {
+        var fvgSlBuf = (cfg.fvgStopBufferAtrMult || 0) * fvgAtr;
+        var fvgSlPrice = fvgResult.triggeredBuy.bottom - fvgSlBuf;
+        var fvgStopDist = fvgClose - fvgSlPrice;
+        var fvgTpBuy = cfg.useLevelTP ? nearestStructuralTP("buy", fvgClose, fvgPivotLevels, structuralTPMaxDistance(fvgAtr)) : null;
+        var fvgIsAdd = fvgPosition.positionType === FXB.PositionTypes.LONG;
+        var fvgReason = "FVG bullish gap-fill reaction [" + fvgResult.triggeredBuy.bottom.toFixed(5) + "–" + fvgResult.triggeredBuy.top.toFixed(5) + "]";
+        if (!fvgIsAdd) {
+          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, fvgAtr, fvgStopDist), fvgReason, fvgAtr, fvgTpBuy, fvgClose, fvgSlPrice);
+          barsSinceLastEntry.buy = 0;
+        } else if (cfg.enableAddOns && addOnsUsed.buy < cfg.maxAddOns) {
+          placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, fvgAtr, fvgStopDist), "add-on, " + fvgReason, fvgAtr, fvgTpBuy, fvgClose, fvgSlPrice);
+          addOnsUsed.buy++; barsSinceLastEntry.buy = 0;
+        } else {
+          log("FVG buy trigger fired but ignored — already long and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
+        }
+      } else {
+        log("FVG bullish gap-fill reaction ignored — existing short position open on " + cfg.instrumentId, "log-warn");
+      }
+    }
+
+    if (fvgResult.triggeredSell) {
+      var fvgSellRoomOk = hasRoomToNextLevel("sell", fvgClose, fvgPivotLevels, fvgAtr);
+      if (!fvgSellRoomOk) {
+        log("FVG bearish gap-fill reaction triggered but skipped — too little room before the nearest support level.", "log-warn");
+      } else if (fvgPosition.positionType !== FXB.PositionTypes.LONG && barsSinceLastEntry.sell > cfg.cooldownBars) {
+        var fvgSlBufS = (cfg.fvgStopBufferAtrMult || 0) * fvgAtr;
+        var fvgSlPriceS = fvgResult.triggeredSell.top + fvgSlBufS;
+        var fvgStopDistS = fvgSlPriceS - fvgClose;
+        var fvgTpSell = cfg.useLevelTP ? nearestStructuralTP("sell", fvgClose, fvgPivotLevels, structuralTPMaxDistance(fvgAtr)) : null;
+        var fvgIsAddS = fvgPosition.positionType === FXB.PositionTypes.SHORT;
+        var fvgReasonS = "FVG bearish gap-fill reaction [" + fvgResult.triggeredSell.bottom.toFixed(5) + "–" + fvgResult.triggeredSell.top.toFixed(5) + "]";
+        if (!fvgIsAddS) {
+          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, fvgAtr, fvgStopDistS), fvgReasonS, fvgAtr, fvgTpSell, fvgClose, fvgSlPriceS);
+          barsSinceLastEntry.sell = 0;
+        } else if (cfg.enableAddOns && addOnsUsed.sell < cfg.maxAddOns) {
+          placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, fvgAtr, fvgStopDistS), "add-on, " + fvgReasonS, fvgAtr, fvgTpSell, fvgClose, fvgSlPriceS);
+          addOnsUsed.sell++; barsSinceLastEntry.sell = 0;
+        } else {
+          log("FVG sell trigger fired but ignored — already short and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
+        }
+      } else {
+        log("FVG bearish gap-fill reaction ignored — existing long position open on " + cfg.instrumentId, "log-warn");
+      }
+    }
+
+    return; // FVG strategy handled everything for this bar — do not fall through to Original's logic below
+  }
+
+  // ---- Supply & Demand strategy — same lightweight data requirement as FVG (needs enough
+  // bars for a base + breakout, not 38), handled entirely separately from both other strategies.
+  if (cfg.strategy === "sd") {
+    if (tradingStore.length < (cfg.sdMaxBaseCandles || 3) + 3) {
+      log("Waiting for history: " + tradingStore.length + "/" + ((cfg.sdMaxBaseCandles || 3) + 3) + " bars loaded for " + cfg.instrumentId + " (Supply & Demand needs a little history to start).", "log-warn");
+      return;
+    }
+    var sdCandle = tradingStore.GetCandle(1);
+    if (!sdCandle) return;
+    var sdAtr = tradingStore.ta[3].GetValue(1) || (sdCandle.h - sdCandle.l);
+    if (!sdAtr || sdAtr <= 0) return;
+
+    scanForNewSDZone(tradingStore, sdAtr);
+    var sdResult = updateAndCheckSDZones(sdCandle);
+    var sdPivotLevels = getPivotLevels();
+    var sdClose = sdCandle.c;
+    var sdPosition = Framework.Positions.getOrEmpty(cfg.instrumentId);
+
+    if (sdPosition.positionType === FXB.PositionTypes.EMPTY) {
+      addOnsUsed.buy = 0; addOnsUsed.sell = 0;
+    }
+
+    Object.keys(barsSinceLastEntry).forEach(function (k) { barsSinceLastEntry[k]++; });
+
+    if (sdResult.triggeredBuy) {
+      var sdBuyRoomOk = hasRoomToNextLevel("buy", sdClose, sdPivotLevels, sdAtr);
+      if (!sdBuyRoomOk) {
+        log("Demand zone reaction triggered but skipped — too little room before the nearest resistance level.", "log-warn");
+      } else if (sdPosition.positionType !== FXB.PositionTypes.SHORT && barsSinceLastEntry.buy > cfg.cooldownBars) {
+        var sdSlBuf = (cfg.sdStopBufferAtrMult || 0) * sdAtr;
+        var sdSlPrice = sdResult.triggeredBuy.bottom - sdSlBuf;
+        var sdStopDist = sdClose - sdSlPrice;
+        var sdTpBuy = cfg.useLevelTP ? nearestStructuralTP("buy", sdClose, sdPivotLevels, structuralTPMaxDistance(sdAtr)) : null;
+        var sdIsAdd = sdPosition.positionType === FXB.PositionTypes.LONG;
+        var sdReason = "demand zone reaction [" + sdResult.triggeredBuy.bottom.toFixed(5) + "–" + sdResult.triggeredBuy.top.toFixed(5) + ", test #" + sdResult.triggeredBuy.timesTested + "]";
+        if (!sdIsAdd) {
+          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, sdAtr, sdStopDist), sdReason, sdAtr, sdTpBuy, sdClose, sdSlPrice);
+          barsSinceLastEntry.buy = 0;
+        } else if (cfg.enableAddOns && addOnsUsed.buy < cfg.maxAddOns) {
+          placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, sdAtr, sdStopDist), "add-on, " + sdReason, sdAtr, sdTpBuy, sdClose, sdSlPrice);
+          addOnsUsed.buy++; barsSinceLastEntry.buy = 0;
+        } else {
+          log("Demand zone trigger fired but ignored — already long and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
+        }
+      } else {
+        log("Demand zone reaction ignored — existing short position open on " + cfg.instrumentId, "log-warn");
+      }
+    }
+
+    if (sdResult.triggeredSell) {
+      var sdSellRoomOk = hasRoomToNextLevel("sell", sdClose, sdPivotLevels, sdAtr);
+      if (!sdSellRoomOk) {
+        log("Supply zone reaction triggered but skipped — too little room before the nearest support level.", "log-warn");
+      } else if (sdPosition.positionType !== FXB.PositionTypes.LONG && barsSinceLastEntry.sell > cfg.cooldownBars) {
+        var sdSlBufS = (cfg.sdStopBufferAtrMult || 0) * sdAtr;
+        var sdSlPriceS = sdResult.triggeredSell.top + sdSlBufS;
+        var sdStopDistS = sdSlPriceS - sdClose;
+        var sdTpSell = cfg.useLevelTP ? nearestStructuralTP("sell", sdClose, sdPivotLevels, structuralTPMaxDistance(sdAtr)) : null;
+        var sdIsAddS = sdPosition.positionType === FXB.PositionTypes.SHORT;
+        var sdReasonS = "supply zone reaction [" + sdResult.triggeredSell.bottom.toFixed(5) + "–" + sdResult.triggeredSell.top.toFixed(5) + ", test #" + sdResult.triggeredSell.timesTested + "]";
+        if (!sdIsAddS) {
+          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, sdAtr, sdStopDistS), sdReasonS, sdAtr, sdTpSell, sdClose, sdSlPriceS);
+          barsSinceLastEntry.sell = 0;
+        } else if (cfg.enableAddOns && addOnsUsed.sell < cfg.maxAddOns) {
+          placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, sdAtr, sdStopDistS), "add-on, " + sdReasonS, sdAtr, sdTpSell, sdClose, sdSlPriceS);
+          addOnsUsed.sell++; barsSinceLastEntry.sell = 0;
+        } else {
+          log("Supply zone trigger fired but ignored — already short and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
+        }
+      } else {
+        log("Supply zone reaction ignored — existing long position open on " + cfg.instrumentId, "log-warn");
+      }
+    }
+
+    return; // Supply & Demand handled everything for this bar — do not fall through to Original's logic below
+  }
+
+  // ==================== Everything below here is the Original (Trend + Momentum) strategy ====
+  // Only reachable when cfg.strategy === "original" (the FVG and S&D branches above always return first).
+
   if (tradingStore.length < cfg.slowLen + 4) {
     log("Waiting for history: " + tradingStore.length + "/" + (cfg.slowLen + 4) + " bars loaded for " + cfg.instrumentId +
         ". If this never advances, the Instrument field likely doesn't exactly match this broker's symbol name.", "log-warn");
@@ -1379,6 +1942,21 @@ function onNewTradingBar() {
   var fast2 = emaFast.GetValue(3), mid2 = emaMid.GetValue(3), slow2 = emaSlow.GetValue(3);
   var atrV = atr.GetValue(1) || range;
   if (!fast || !mid || !slow || !fast2 || !mid2 || !slow2) return;
+
+  // Computed once per bar — both SL and TP scale by the same factor, so the reward-to-risk
+  // ratio set by the base Stop-loss/Take-profit values never quietly changes, only their size.
+  var volMult = getVolatilityAdjustedMultipliers(atrV, c);
+  if (cfg.volAdjustOn && Math.abs(volMult.factor - 1) > 0.03) {
+    log("Volatility-adjusted: SL " + cfg.slAtrMult.toFixed(2) + "→" + volMult.sl.toFixed(2) + "×ATR, TP " +
+        cfg.tpAtrMult.toFixed(2) + "→" + volMult.tp.toFixed(2) + "×ATR (relative volatility " +
+        volMult.relVol.toFixed(3) + "% of price)", "log-info");
+  }
+  // Reused by every Original-strategy entry below (base, add-on, reversal, retest, level-retest)
+  // so every one of them uses the exact same volatility-adjusted stop distance — both for the
+  // actual stop-loss price AND for risk-sizing, so the two can never drift apart from each other.
+  var slDistOrig = (cfg.addStopLoss && volMult.sl > 0) ? atrV * volMult.sl : 0;
+  var slBuyPriceOrig = slDistOrig > 0 ? c - slDistOrig : null;
+  var slSellPriceOrig = slDistOrig > 0 ? c + slDistOrig : null;
 
   var bullStack = fast > mid && mid > slow;
   var bearStack = fast < mid && mid < slow;
@@ -1456,17 +2034,23 @@ function onNewTradingBar() {
     addOnsUsed.buy = 0; addOnsUsed.sell = 0;
   }
 
+  var buyRoomOk = hasRoomToNextLevel("buy", c, pivotLevels, atrV);
+  var sellRoomOk = hasRoomToNextLevel("sell", c, pivotLevels, atrV);
+
   // --- Primary BUY: uptrend + signal + above pivot ---
   if (buySignal && aboveP && barsSinceLastEntry.buy > cfg.cooldownBars) {
-    if (position.positionType !== FXB.PositionTypes.SHORT) {
+    if (!buyRoomOk) {
+      log("Buy signal fired but skipped — too little room before the nearest resistance level (needs at least " +
+          (atrV * cfg.minRoomAtrMult).toFixed(5) + " away). Waiting for a cleaner setup.", "log-warn");
+    } else if (position.positionType !== FXB.PositionTypes.SHORT) {
       var isAdd = position.positionType === FXB.PositionTypes.LONG;
-      var tpBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
+      var tpBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
       var pivotTxt = pivotP !== null ? pivotP.toFixed(5) : "n/a";
       if (!isAdd) {
-        placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal above pivot P (" + pivotTxt + ")", atrV, tpBuy, c);
+        placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV, slDistOrig), "uptrend signal above pivot P (" + pivotTxt + ")", atrV, tpBuy, c, slBuyPriceOrig);
         barsSinceLastEntry.buy = 0;
       } else if (cfg.enableAddOns && addOnsUsed.buy < cfg.maxAddOns) {
-        placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, uptrend signal above pivot P", atrV, tpBuy, c);
+        placeOrder("buy", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV, slDistOrig), "add-on, uptrend signal above pivot P", atrV, tpBuy, c, slBuyPriceOrig);
         addOnsUsed.buy++; barsSinceLastEntry.buy = 0;
       } else {
         log("Buy signal fired but ignored — already long and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
@@ -1478,8 +2062,8 @@ function onNewTradingBar() {
         log("Buy signal — reversing existing short position on " + cfg.instrumentId + " (Reversal Mode, confirmed)", "log-buy");
         closeAllOpposite("sell", function () {
           addOnsUsed.buy = 0; addOnsUsed.sell = 0;
-          var tpBuyRev = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "uptrend signal (reversal)", atrV, tpBuyRev, c);
+          var tpBuyRev = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+          placeOrder("buy", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV, slDistOrig), "uptrend signal (reversal)", atrV, tpBuyRev, c, slBuyPriceOrig);
           barsSinceLastEntry.buy = 0;
         });
       } else {
@@ -1496,15 +2080,18 @@ function onNewTradingBar() {
 
   // --- Primary SELL: downtrend + signal + below pivot ---
   if (sellSignal && belowP && barsSinceLastEntry.sell > cfg.cooldownBars) {
-    if (position.positionType !== FXB.PositionTypes.LONG) {
+    if (!sellRoomOk) {
+      log("Sell signal fired but skipped — too little room before the nearest support level (needs at least " +
+          (atrV * cfg.minRoomAtrMult).toFixed(5) + " away). Waiting for a cleaner setup.", "log-warn");
+    } else if (position.positionType !== FXB.PositionTypes.LONG) {
       var isAddS = position.positionType === FXB.PositionTypes.SHORT;
-      var tpSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
+      var tpSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
       var pivotTxtS = pivotP !== null ? pivotP.toFixed(5) : "n/a";
       if (!isAddS) {
-        placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal below pivot P (" + pivotTxtS + ")", atrV, tpSell, c);
+        placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV, slDistOrig), "downtrend signal below pivot P (" + pivotTxtS + ")", atrV, tpSell, c, slSellPriceOrig);
         barsSinceLastEntry.sell = 0;
       } else if (cfg.enableAddOns && addOnsUsed.sell < cfg.maxAddOns) {
-        placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV), "add-on, downtrend signal below pivot P", atrV, tpSell, c);
+        placeOrder("sell", computeLotSize(cfg.addOnLots, cfg.addOnRiskPct, atrV, slDistOrig), "add-on, downtrend signal below pivot P", atrV, tpSell, c, slSellPriceOrig);
         addOnsUsed.sell++; barsSinceLastEntry.sell = 0;
       } else {
         log("Sell signal fired but ignored — already short and add-on cap (" + cfg.maxAddOns + ") reached or add-ons disabled", "log-warn");
@@ -1516,8 +2103,8 @@ function onNewTradingBar() {
         log("Sell signal — reversing existing long position on " + cfg.instrumentId + " (Reversal Mode, confirmed)", "log-sell");
         closeAllOpposite("buy", function () {
           addOnsUsed.buy = 0; addOnsUsed.sell = 0;
-          var tpSellRev = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV), "downtrend signal (reversal)", atrV, tpSellRev, c);
+          var tpSellRev = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+          placeOrder("sell", computeLotSize(cfg.baseLots, cfg.baseRiskPct, atrV, slDistOrig), "downtrend signal (reversal)", atrV, tpSellRev, c, slSellPriceOrig);
           barsSinceLastEntry.sell = 0;
         });
       } else {
@@ -1534,28 +2121,28 @@ function onNewTradingBar() {
 
   // --- Retest-of-trend-line entries ---
   if (cfg.enableRetest) {
-    if (retestBuy && aboveP && barsSinceLastEntry.retestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
-      var tpRetestBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("buy", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, uptrend above pivot P", atrV, tpRetestBuy, c);
+    if (retestBuy && aboveP && buyRoomOk && barsSinceLastEntry.retestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
+      var tpRetestBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+      placeOrder("buy", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV, slDistOrig), "retest of EMA" + cfg.midLen + " trend line, uptrend above pivot P", atrV, tpRetestBuy, c, slBuyPriceOrig);
       barsSinceLastEntry.retestBuy = 0;
     }
-    if (retestSell && belowP && barsSinceLastEntry.retestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
-      var tpRetestSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("sell", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV), "retest of EMA" + cfg.midLen + " trend line, downtrend below pivot P", atrV, tpRetestSell, c);
+    if (retestSell && belowP && sellRoomOk && barsSinceLastEntry.retestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
+      var tpRetestSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+      placeOrder("sell", computeLotSize(cfg.retestLots, cfg.retestRiskPct, atrV, slDistOrig), "retest of EMA" + cfg.midLen + " trend line, downtrend below pivot P", atrV, tpRetestSell, c, slSellPriceOrig);
       barsSinceLastEntry.retestSell = 0;
     }
   }
 
   // --- Retest-of-structural-level entries (breakout-retest of R1/S1/Fib/R2/S2) ---
   if (cfg.enableLevelRetest && pivotLevels) {
-    if (levelRetestBuy !== null && aboveP && barsSinceLastEntry.levelRetestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
-      var tpLevelBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("buy", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestBuy.toFixed(5) + " as support", atrV, tpLevelBuy, c);
+    if (levelRetestBuy !== null && aboveP && buyRoomOk && barsSinceLastEntry.levelRetestBuy > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.SHORT) {
+      var tpLevelBuy = cfg.useLevelTP ? nearestStructuralTP("buy", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+      placeOrder("buy", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV, slDistOrig), "retest of broken level " + levelRetestBuy.toFixed(5) + " as support", atrV, tpLevelBuy, c, slBuyPriceOrig);
       barsSinceLastEntry.levelRetestBuy = 0;
     }
-    if (levelRetestSell !== null && belowP && barsSinceLastEntry.levelRetestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
-      var tpLevelSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV)) : null;
-      placeOrder("sell", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV), "retest of broken level " + levelRetestSell.toFixed(5) + " as resistance", atrV, tpLevelSell, c);
+    if (levelRetestSell !== null && belowP && sellRoomOk && barsSinceLastEntry.levelRetestSell > cfg.cooldownBars && position.positionType !== FXB.PositionTypes.LONG) {
+      var tpLevelSell = cfg.useLevelTP ? nearestStructuralTP("sell", c, pivotLevels, structuralTPMaxDistance(atrV, volMult.tp)) : null;
+      placeOrder("sell", computeLotSize(cfg.levelRetestLots, cfg.levelRetestRiskPct, atrV, slDistOrig), "retest of broken level " + levelRetestSell.toFixed(5) + " as resistance", atrV, tpLevelSell, c, slSellPriceOrig);
       barsSinceLastEntry.levelRetestSell = 0;
     }
   }
@@ -1613,6 +2200,7 @@ function startBot() {
 
   cfg = readConfig();
   if (!cfg.instrumentId) { log("Enter an instrument ID first (e.g. EUR/USD).", "log-warn"); return; }
+  if (!document.getElementById("strategySelect").value) { log("Select a Strategy first (Original or FVG) — this decides how the bot finds trades.", "log-warn"); return; }
   if (!document.getElementById("accountSizeSelect").value) { log("Select your Account Size first — this sets your position sizing and risk limits.", "log-warn"); return; }
   if (!document.getElementById("modeSelect").value) { log("Select a Mode first (Scalper or Swing) — this sets your timeframe and risk profile.", "log-warn"); return; }
 
@@ -1643,6 +2231,13 @@ function startBot() {
   addOnsUsed = { buy: 0, sell: 0 };
   pendingManagement = [];
   managedOrders = {};
+  activeFVGs = []; // fresh gap list every Start — stale gaps from a previous session/instrument aren't relevant
+  activeSDZones = []; // fresh zone list every Start, same reasoning
+
+  log("Strategy: " + strategyDisplayName(cfg.strategy) + " selected.", "log-info");
+  if (!cfg.autoTradingOn) {
+    log("⚠️ Auto Trading is OFF — this bot will NOT open any new trades on its own. It will still add a missing stop-loss/take-profit, move to breakeven, and trail any trade you place manually, and the Daily circuit breaker still applies.", "log-warn");
+  }
 
   // Re-adopt any already-open trades on this instrument — this is what stops a page reload or
   // re-pasted update from silently orphaning a live trade. Without this, restarting the bot
@@ -1751,7 +2346,7 @@ function startHeartbeat() {
     if (gapMin > 15) {
       log("⏰ Resumed after being inactive for ~" + gapMin.toFixed(0) + " minute(s) — the browser tab or computer was very likely asleep or backgrounded during that gap, not the bot failing to trade. Keep the tab active/foreground, or disable sleep mode, to run this reliably unattended.", "log-warn");
     } else {
-      log("💓 Still running — watching " + (cfg ? cfg.instrumentId : "") + ". " + getCurrentTrendSummary(), "log-info");
+      log("💓 Still running" + (cfg && !cfg.autoTradingOn ? " (Manual mode)" : "") + " — watching " + (cfg ? cfg.instrumentId : "") + ". " + getCurrentTrendSummary(), "log-info");
     }
     lastHeartbeatAt = now;
   }, HEARTBEAT_INTERVAL_MS);
@@ -1760,12 +2355,22 @@ function stopHeartbeat() {
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
 }
 
-// Reads the bot's own current EMA stack directly from the live candle store, independent of a
-// bar close, and describes it in plain language. This is grounded in the exact same trend logic
-// the real signal uses — not a separate invented "choppiness score" — so what it says is always
-// consistent with what the bot is actually seeing, not a guess dressed up as one.
+// Reads the bot's own current state directly from the live candle store and describes it in
+// plain language — grounded in whichever strategy is actually selected, not a generic guess.
 function getCurrentTrendSummary() {
-  if (!cfg || !tradingStore || tradingStore.length < cfg.slowLen + 4) return "Still loading price history.";
+  if (!cfg || !tradingStore) return "Still loading price history.";
+
+  if (cfg.strategy === "fvg") {
+    if (tradingStore.length < 5) return "Still loading price history.";
+    return activeFVGs.length + " active gap(s) being watched for a retest.";
+  }
+
+  if (cfg.strategy === "sd") {
+    if (tradingStore.length < (cfg.sdMaxBaseCandles || 3) + 3) return "Still loading price history.";
+    return activeSDZones.length + " active zone(s) being watched for a retest.";
+  }
+
+  if (tradingStore.length < cfg.slowLen + 4) return "Still loading price history.";
   var emaFast = tradingStore.ta[0], emaMid = tradingStore.ta[1], emaSlow = tradingStore.ta[2];
   var fast = emaFast.GetValue(1), mid = emaMid.GetValue(1), slow = emaSlow.GetValue(1);
   var fast2 = emaFast.GetValue(3), mid2 = emaMid.GetValue(3), slow2 = emaSlow.GetValue(3);
@@ -1862,6 +2467,16 @@ Framework.OnLoad = function () {
   document.getElementById("accountSizeSelect").addEventListener("change", function () {
     applyAccountSizePreset(this.value);
     log("Account size set to " + this.value + " — position sizing, daily limits, and trailing amounts updated automatically.", "log-info");
+  });
+  document.getElementById("strategySelect").addEventListener("change", function () {
+    log("Strategy set to " + strategyDisplayName(this.value) + ".", "log-info");
+  });
+  document.getElementById("volSensitivity").addEventListener("change", function () {
+    applyVolSensitivityPreset(this.value);
+    log("Volatility sensitivity set to " + this.value + ".", "log-info");
+  });
+  document.getElementById("volCustomToggle").addEventListener("change", function () {
+    document.getElementById("volCustomFields").style.display = this.checked ? "block" : "none";
   });
 };
 
