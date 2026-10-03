@@ -28,6 +28,10 @@
    Forex, Gold, Indices, Crypto — alert zone auto-scales
    based on the instrument's pip size so you only need to
    set it once and it works everywhere.
+
+   ── WORKS ON ALL TIMEFRAMES ───────────────────────────────
+   M1 through H4 — lines always project forward (right) from
+   the start of today.
 ================================================================ */
 
 class MyIndicator extends UserDefinedIndicator {
@@ -242,17 +246,21 @@ class MyIndicator extends UserDefinedIndicator {
         }
 
         // ── Draw / update lines ───────────────────────────────
-        // Line runs from the start of today to far right
+        // Line runs from the start of today forward to the right
         // todayStartIdx is the oldest today bar = left anchor
         var lineLeft  = bd.date[todayStartIdx];   // left edge = start of today
         var barMs     = this._barMs(bd, count);
-        // Right edge: extend well past current bar
-        var lineRight = bd.date[0] - (50 * barMs); // project 50 bars to the right
 
-        // If not extending, just run to current bar
-        if (!extendLine) {
-            lineRight = bd.date[0];
-        }
+        // Right edge: FORWARD (+) 50 bars past the current bar.
+        // (Was "-" before, which pointed the line into the past —
+        //  on H1/H4 that landed before today's start and flipped the line.)
+        var lineRight = extendLine
+            ? bd.date[0] + (50 * barMs)
+            : bd.date[0];
+
+        // Safety: right edge must always be after left edge
+        // (e.g. H4 right after midnight when today has only 1 bar)
+        if (lineRight <= lineLeft) lineRight = lineLeft + barMs;
 
         var self = this;
 
