@@ -1,5 +1,5 @@
 /* ================================================================
-   Liquid Charts Pro — Smart Pivot Points v5
+   Liquid Charts Pro — Smart Pivot Points v5.1
    ================================================================
    INSTALL:
    1. Open Liquid Charts Pro → open any chart
@@ -12,8 +12,13 @@
      P          → White  — most important level
      R1, R2, R3 → Red    — resistance / sell zones
      S1, S2, S3 → Teal   — support / buy zones
-     Fib 61.8%  → Purple — best entry zones
+     Fib 25%    → Sky Blue — first reaction zone
      Fib 38.2%  → Violet — targets / secondary zones
+     Fib 61.8%  → Purple — best entry zones
+     Fib 75%    → Orange — deep pullback zone
+     Fib 88.6%  → Gold   — last line before full extension
+     Fib 100%   → Pink   — full range extension
+     Fib 110%   → Silver — overshoot / exhaustion zone
 
    TIMEFRAME GUIDE:
    M1–M30 → Daily | H1–H4 → Weekly | D1 → Monthly
@@ -32,8 +37,13 @@ class MyIndicator extends UserDefinedIndicator {
             P:      "#ffffff",
             R:      "#ef5350",
             S:      "#26a69a",
-            fib618: "#ab47bc",
+            fib25:  "#4fc3f7",
             fib382: "#9575cd",
+            fib618: "#ab47bc",
+            fib75:  "#ffa726",
+            fib886: "#ffd54f",
+            fib100: "#f06292",
+            fib110: "#bdbdbd",
             zoneR:  "rgba(239,83,80,0.11)",
             zoneS:  "rgba(38,166,154,0.11)",
             pZone:  "rgba(255,255,255,0.04)"
@@ -228,10 +238,23 @@ class MyIndicator extends UserDefinedIndicator {
             var S2  = P - range;
             var S3  = S1 - range;
 
-            var fib618R = P + 0.618 * range;
+            // Fibonacci levels — resistance side (above P)
+            var fib25R  = P + 0.25  * range;
             var fib382R = P + 0.382 * range;
+            var fib618R = P + 0.618 * range;
+            var fib75R  = P + 0.75  * range;
+            var fib886R = P + 0.886 * range;
+            var fib100R = P + 1.00  * range;
+            var fib110R = P + 1.10  * range;
+
+            // Fibonacci levels — support side (below P)
+            var fib25S  = P - 0.25  * range;
             var fib382S = P - 0.382 * range;
             var fib618S = P - 0.618 * range;
+            var fib75S  = P - 0.75  * range;
+            var fib886S = P - 0.886 * range;
+            var fib100S = P - 1.00  * range;
+            var fib110S = P - 1.10  * range;
 
             if (showZones && isCurrent) {
                 drawings.push({type:"rectangle",unselectable:true,showInBackground:true,
@@ -259,10 +282,22 @@ class MyIndicator extends UserDefinedIndicator {
                 levels.push({price:S3, color:fade(C.S,alpha*0.55), lw:lw, dash:true, label:"S3"});
             }
             if (showFib) {
+                // Resistance side — outermost to innermost
+                levels.push({price:fib110R, color:fade(C.fib110,alpha*0.70), lw:lw, dash:true, label:"Fib 110% R"});
+                levels.push({price:fib100R, color:fade(C.fib100,alpha*0.80), lw:lw, dash:true, label:"Fib 100% R"});
+                levels.push({price:fib886R, color:fade(C.fib886,alpha*0.85), lw:lw, dash:true, label:"Fib 88.6% R"});
+                levels.push({price:fib75R,  color:fade(C.fib75, alpha*0.85), lw:lw, dash:true, label:"Fib 75% R"});
                 levels.push({price:fib618R, color:fade(C.fib618,alpha*0.90), lw:lw, dash:true, label:"Fib 61.8% R"});
                 levels.push({price:fib382R, color:fade(C.fib382,alpha*0.70), lw:lw, dash:true, label:"Fib 38.2% R"});
+                levels.push({price:fib25R,  color:fade(C.fib25, alpha*0.70), lw:lw, dash:true, label:"Fib 25% R"});
+                // Support side — innermost to outermost
+                levels.push({price:fib25S,  color:fade(C.fib25, alpha*0.70), lw:lw, dash:true, label:"Fib 25% S"});
                 levels.push({price:fib382S, color:fade(C.fib382,alpha*0.70), lw:lw, dash:true, label:"Fib 38.2% S"});
                 levels.push({price:fib618S, color:fade(C.fib618,alpha*0.90), lw:lw, dash:true, label:"Fib 61.8% S"});
+                levels.push({price:fib75S,  color:fade(C.fib75, alpha*0.85), lw:lw, dash:true, label:"Fib 75% S"});
+                levels.push({price:fib886S, color:fade(C.fib886,alpha*0.85), lw:lw, dash:true, label:"Fib 88.6% S"});
+                levels.push({price:fib100S, color:fade(C.fib100,alpha*0.80), lw:lw, dash:true, label:"Fib 100% S"});
+                levels.push({price:fib110S, color:fade(C.fib110,alpha*0.70), lw:lw, dash:true, label:"Fib 110% S"});
             }
 
             for (var d = 0; d < levels.length; d++) {
