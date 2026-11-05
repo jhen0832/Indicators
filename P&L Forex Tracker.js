@@ -3,30 +3,48 @@
    ================================================================
    INSTALL:
    1. Open Liquid Charts Pro → open any chart
-   2. Indicators → Advanced → Add UDI
-   3. Paste this file into the Code tab
-   4. Mode:           UDI + Framework
-   5. Trading action: Confirm
-   6. Click ADD
+   2. Remove the old P&L Card from the chart
+   3. Indicators → Advanced → Add UDI
+   4. Paste this file into the Code tab
+   5. Mode:           UDI + Framework
+   6. Trading action: Confirm
+   7. Click ADD
 
    Shows a floating card with:
-   - Today's total P&L (big number, green or red)
-   - Realised P&L (closed trades today)
+   - Total P&L (big number, green or red)
+   - Realised P&L (closed trades)
    - Floating P&L (open trades right now)
    - Account balance
    - Minimize button to collapse to just the number
+
+   The P&L stays through page refreshes, broker stalls, logouts and
+   new days. It only clears when you click Reset on the card.
+
+   The starting balance is saved outside the card's HTML, which is a
+   sandboxed iframe that can't keep data. It is saved in two places:
+   - the platform's own settings storage
+   - the browser's IndexedDB
+   Each account keeps its own record, and the newest record wins.
 ================================================================ */
+
+var PNL_SETTINGS_ID = "jcash-pnl-card-v3";
+var PNL_DB_NAME     = "jcash-pnl-card";
+var PNL_DB_STORE    = "state";
+var PNL_LOAD_WAIT   = 15000;   // ms to wait for saved data before starting fresh
 
 class MyIndicator extends UserDefinedIndicator {
 
     onInit(data) {
-        this.$htmlCreated    = false;
-        this.$todayDateStr   = new Date().toISOString().slice(0, 10);
-        this.$histLoaded     = true;
-        this.$currency       = "$";
-        this.$openingBalance = null;
-        this.$waitingForRestore = true;
-        this.$pendingReset = false;  // set true to reset on next tick
+        this.$htmlCreated = false;
+        this.$currency    = "$";
+        this.$store       = {};     // account key → {o: starting balance, t: saved at, s: since}
+        this.$catLoaded   = false;
+        this.$idbLoaded   = false;
+        this.$catDirty    = false;
+        this.$resetWanted = false;
+        this.$startedAt   = Date.now();
+
+        this._loadSaved();
 
         var self = this;
         setInterval(function() { self._tick(); }, 1000);
@@ -40,35 +58,17 @@ class MyIndicator extends UserDefinedIndicator {
     }
 
     onContextChange(data) {}
+
     onParameterChange(data) {
         var p = data.parameters;
-        var doReset = p.resetPnL === true || p.resetPnL === "true" || p.resetPnL === 1;
-        if (doReset) {
-            // Set flag — _tick will handle it on next second
-            // (safer than calling sendHTMLMessage here which may not be ready)
-            this.$pendingReset = true;
+        if (p.resetPnL === true || p.resetPnL === "true" || p.resetPnL === 1) {
+            this.$resetWanted = true;
         }
     }
 
     onHTMLMessage(msg) {
-        if (!msg) return;
-        // User clicked RESET button on the card
-        if (msg.action === "resetBalance") {
-            this.$openingBalance    = null;
-            this.$waitingForRestore = false;
-            // _tick will set a fresh openingBalance on next second
-            return;
-        }
-        // Panel sends back saved opening balance on load
-        if (msg.action === "restoreBalance" && msg.balance > 0) {
-            var today = new Date().toISOString().slice(0, 10);
-            if (msg.date === today) {
-                this.$openingBalance    = msg.balance;
-                this.$waitingForRestore = false;
-            }
-        }
-        if (msg.action === "ready") {
-            this.$waitingForRestore = false;
+        if (msg && msg.action === "resetBalance") {
+            this.$resetWanted = true;
         }
     }
 
@@ -77,71 +77,150 @@ class MyIndicator extends UserDefinedIndicator {
             this.$htmlCreated = true;
             this._buildCard();
         }
+    }
 
-        // Reset opening balance on new calendar day
-        var todayStr = new Date().toISOString().slice(0, 10);
-        if (todayStr !== this.$todayDateStr) {
-            this.$todayDateStr   = todayStr;
-            this.$openingBalance = null;
-            this.$waitingForRestore = false;
-            this.sendHTMLMessage({clearBalance: true});
+    // ── Saving and loading ───────────────────────────────────
+
+    _loadSaved() {
+        var self = this;
+
+        // Platform settings storage
+        try {
+            Framework.LoadCategorySettings(PNL_SETTINGS_ID, function(settings) {
+                self._merge(settings && settings.accounts);
+                self.$catLoaded = true;
+                self._afterLoad();
+            });
+            // A reset on another chart reaches this copy too
+            Framework.AddMessageHandler(function(Msg) {
+                if (Msg.is(FXB.MessageTypes.CATEGORY_SETTINGS_CHANGE)) {
+                    var s = Msg.categorySettings || Framework.categorySettings;
+                    self._merge(s && s.accounts);
+                }
+            });
+        } catch (e) {
+            this.$catLoaded = true;
+        }
+
+        // Browser IndexedDB
+        this._withDB(function(db) {
+            var req = db.transaction(PNL_DB_STORE, "readonly")
+                        .objectStore(PNL_DB_STORE).get("accounts");
+            req.onsuccess = function() {
+                self._merge(req.result);
+                db.close();
+                self.$idbLoaded = true;
+                self._afterLoad();
+            };
+            req.onerror = function() {
+                db.close();
+                self.$idbLoaded = true;
+                self._afterLoad();
+            };
+        }, function() {
+            self.$idbLoaded = true;
+            self._afterLoad();
+        });
+    }
+
+    _afterLoad() {
+        if (this.$catLoaded && this.$catDirty) {
+            this.$catDirty = false;
+            this._persist();
+            return;
+        }
+        // Both stores have answered: copy the newest records to both
+        if (this.$catLoaded && this.$idbLoaded && Object.keys(this.$store).length > 0) {
+            this._persist();
         }
     }
+
+    _withDB(onOpen, onFail) {
+        try {
+            var open = indexedDB.open(PNL_DB_NAME, 1);
+            open.onupgradeneeded = function() {
+                open.result.createObjectStore(PNL_DB_STORE);
+            };
+            open.onsuccess = function() { onOpen(open.result); };
+            open.onerror   = function() { onFail(); };
+            open.onblocked = function() { onFail(); };
+        } catch (e) {
+            onFail();
+        }
+    }
+
+    _merge(accounts) {
+        if (!accounts) return;
+        for (var key in accounts) {
+            var rec = accounts[key];
+            if (!rec || typeof rec.o !== "number") continue;
+            var cur = this.$store[key];
+            if (!cur || rec.t > cur.t) this.$store[key] = rec;
+        }
+    }
+
+    _persist() {
+        var accounts = this.$store;
+
+        if (this.$catLoaded) {
+            try { Framework.SaveCategorySettings({accounts: accounts}); } catch (e) {}
+        } else {
+            this.$catDirty = true;   // the platform requires a load before a save
+        }
+
+        this._withDB(function(db) {
+            try {
+                var tx = db.transaction(PNL_DB_STORE, "readwrite");
+                tx.objectStore(PNL_DB_STORE).put(accounts, "accounts");
+                tx.oncomplete = function() { db.close(); };
+                tx.onerror    = function() { db.close(); };
+            } catch (e) {
+                db.close();
+            }
+        }, function() {});
+    }
+
+    // ── Main loop ────────────────────────────────────────────
 
     _tick() {
         if (!this.$htmlCreated) return;
 
-        // Handle pending manual reset
-        if (this.$pendingReset) {
-            this.$pendingReset      = false;
-            this.$openingBalance    = null;
-            this.$waitingForRestore = false;
-            // Clear all saved storage in the panel
-            this.sendHTMLMessage({clearBalance: true});
-            // Show zeros immediately
-            var cur = this.$currency || "$";
-            this.sendHTMLMessage({
-                balance:     cur + "0.00",
-                realised:    cur + "0.00",
-                floating:    cur + "0.00",
-                total:       cur + "0.00",
-                totalRaw:    0,
-                realisedRaw: 0,
-                floatingRaw: 0,
-                loading:     false
-            });
-            return;
+        var acct;
+        try { acct = Framework.Account; } catch (e) { return; }
+        if (!acct || acct.accountId === undefined || acct.accountId === null) return;
+
+        var balance  = acct.balance    || 0;
+        var floating = acct.floatingPL || 0;
+
+        // Broker stalled or still connecting: leave the card as it is
+        if (!(balance > 0)) return;
+
+        var currency = acct.currencySymbol || acct.depositCurrency || this.$currency || "$";
+        this.$currency = currency;
+
+        var features = acct.features || {};
+        var key = (features.platformInstance || "") + ":" + acct.accountId;
+        var now = Date.now();
+
+        if (this.$resetWanted) {
+            this.$resetWanted = false;
+            this.$store[key] = {o: balance - floating, t: now, s: now};
+            this._persist();
         }
 
-        if (this.$waitingForRestore) return;
+        var rec = this.$store[key];
+        if (!rec) {
+            // Never start fresh until saved data has had the chance to arrive
+            var settled = this.$catLoaded && this.$idbLoaded;
+            if (!settled && now - this.$startedAt < PNL_LOAD_WAIT) return;
 
-        var balance  = 0;
-        var floating = 0;
-        var currency = this.$currency || "$";
-
-        try {
-            var acct = Framework.Account;
-            if (acct) {
-                balance  = acct.balance    || 0;
-                floating = acct.floatingPL || 0;
-                currency = acct.currencySymbol || acct.depositCurrency || "$";
-                this.$currency = currency;
-            }
-        } catch(e) { return; }
-
-        if (this.$openingBalance === null && balance > 0) {
-            this.$openingBalance = balance - floating;
-            // Send to panel to save — panel uses sessionStorage + window.name
-            // both of which survive soft reloads and sleep mode
-            this.sendHTMLMessage({
-                saveBalance: this.$openingBalance,
-                saveDate:    this.$todayDateStr
-            });
+            // t:0 means saved data that arrives late still takes priority
+            rec = {o: balance - floating, t: settled ? now : 0, s: now};
+            this.$store[key] = rec;
+            this._persist();
         }
 
-        if (this.$openingBalance === null) return;
-
-        var realised = (balance - floating) - this.$openingBalance;
+        var realised = (balance - floating) - rec.o;
         var total    = realised + floating;
 
         this.sendHTMLMessage({
@@ -152,6 +231,7 @@ class MyIndicator extends UserDefinedIndicator {
             totalRaw:    total,
             realisedRaw: realised,
             floatingRaw: floating,
+            since:       rec.s,
             loading:     false
         });
     }
@@ -282,13 +362,13 @@ body {
     <div class="header">
       <div class="header-left">
         <span class="dot"></span>
-        <span class="title">Today's P&amp;L</span>
+        <span class="title">Total P&amp;L</span>
       </div>
       <button class="minimize-btn" onclick="toggleMin()" id="min-btn">—</button>
     </div>
 
     <div class="big-pnl neu" id="big-pnl">—</div>
-    <div class="day-label">Today's total performance</div>
+    <div class="day-label" id="day-label">Loading...</div>
 
     <div class="bar-wrap">
       <div class="bar-fill" id="bar"></div>
@@ -318,7 +398,7 @@ body {
 
     <div class="reset-bar" onclick="doReset()">
       <span class="reset-bar-icon">↺</span>
-      <span class="reset-bar-txt">Reset Today's P&amp;L</span>
+      <span class="reset-bar-txt">Reset P&amp;L</span>
     </div>
   </div>
 
@@ -337,105 +417,29 @@ body {
 
 <script>
 var isMin = false;
-
-// ── Persistent balance storage ────────────────────────────
-// Uses THREE methods so at least one always survives:
-// 1. sessionStorage  — survives page refresh
-// 2. window.name     — survives navigation/reload
-// 3. cookie          — survives logout and sleep
-
-var SAVE_KEY = "pnlcard_ob_v2";
-
-function saveBalance(balance, date) {
-  var val = JSON.stringify({b: balance, d: date});
-  // Method 1: sessionStorage
-  try { sessionStorage.setItem(SAVE_KEY, val); } catch(e) {}
-  // Method 2: window.name (survives page reload)
-  try {
-    var wn = {};
-    try { wn = JSON.parse(window.name) || {}; } catch(e2) {}
-    wn[SAVE_KEY] = val;
-    window.name = JSON.stringify(wn);
-  } catch(e) {}
-  // Method 3: document.cookie (survives logout)
-  try {
-    var exp = new Date();
-    exp.setHours(23, 59, 59, 999);
-    document.cookie = SAVE_KEY + "=" + encodeURIComponent(val)
-        + "; expires=" + exp.toUTCString() + "; path=/; SameSite=Lax";
-  } catch(e) {}
-}
-
-function loadBalance() {
-  var val = null;
-  // Try sessionStorage first
-  try { val = sessionStorage.getItem(SAVE_KEY); } catch(e) {}
-  // Try window.name
-  if (!val) {
-    try {
-      var wn = JSON.parse(window.name) || {};
-      val = wn[SAVE_KEY] || null;
-    } catch(e) {}
-  }
-  // Try cookie
-  if (!val) {
-    try {
-      var cookies = document.cookie.split(";");
-      for (var i = 0; i < cookies.length; i++) {
-        var c = cookies[i].trim();
-        if (c.indexOf(SAVE_KEY + "=") === 0) {
-          val = decodeURIComponent(c.substring(SAVE_KEY.length + 1));
-          break;
-        }
-      }
-    } catch(e) {}
-  }
-  if (!val) return null;
-  try { return JSON.parse(val); } catch(e) { return null; }
-}
-
-function clearBalance() {
-  try { sessionStorage.removeItem(SAVE_KEY); } catch(e) {}
-  try {
-    var wn = {};
-    try { wn = JSON.parse(window.name) || {}; } catch(e2) {}
-    delete wn[SAVE_KEY];
-    window.name = JSON.stringify(wn);
-  } catch(e) {}
-  try {
-    document.cookie = SAVE_KEY + "=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-  } catch(e) {}
-}
-
-// On load — try to restore saved balance and send it to the indicator
-(function() {
-  var today = new Date().toISOString().slice(0, 10);
-  var saved = loadBalance();
-  if (saved && saved.b > 0 && saved.d === today) {
-    // Send saved balance back to indicator
-    window.parent.postMessage({action: "restoreBalance", balance: saved.b, date: saved.d}, "*");
-  } else {
-    // Nothing saved — tell indicator we're ready
-    window.parent.postMessage({action: "ready"}, "*");
-  }
-})();
+var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 // ── Date ──────────────────────────────────────────────────
 function updateDate() {
-  var now    = new Date();
-  var days   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var str    = days[now.getDay()] + ', ' + months[now.getMonth()] + ' ' + now.getDate() + ' ' + now.getFullYear();
+  var now  = new Date();
+  var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  var str  = days[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate() + ' ' + now.getFullYear();
   var el = document.getElementById('card-date');
   if (el) el.textContent = str;
 }
 updateDate();
 setInterval(updateDate, 60000);
 
+function sinceText(ms) {
+  var d = new Date(ms);
+  var h = d.getHours();
+  var ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  var m = d.getMinutes();
+  return 'Since ' + MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + h + ':' + (m < 10 ? '0' : '') + m + ' ' + ap;
+}
+
 function doReset() {
-  // Clear all saved storage immediately
-  clearBalance();
-  // Reset all displays to zero
   var pnlEl = document.getElementById('big-pnl');
   if (pnlEl) { pnlEl.textContent = '$0.00'; pnlEl.className = 'big-pnl neu'; }
   var miniEl = document.getElementById('mini-pnl');
@@ -446,7 +450,6 @@ function doReset() {
   if (fEl) { fEl.textContent = '$0.00'; fEl.className = 'stat-val neu'; }
   var bar = document.getElementById('bar');
   if (bar) { bar.style.width = '0%'; bar.className = 'bar-fill'; }
-  // Tell the indicator to wipe its openingBalance
   window.parent.postMessage({action: 'resetBalance'}, '*');
 }
 
@@ -471,14 +474,9 @@ function cls(val) { return val > 0 ? 'pos' : val < 0 ? 'neg' : 'neu'; }
 window.addEventListener('message', function(e) {
   var d = e.data; if (!d) return;
 
-  // Save/clear balance commands from indicator
-  if (d.saveBalance !== undefined && d.saveBalance > 0) {
-    saveBalance(d.saveBalance, d.saveDate);
+  if (d.since) {
+    document.getElementById('day-label').textContent = sinceText(d.since);
   }
-  if (d.clearBalance) {
-    clearBalance();
-  }
-
   if (d.balance !== undefined) {
     document.getElementById('balance').textContent = d.balance;
   }
@@ -514,7 +512,7 @@ window.addEventListener('message', function(e) {
             foreground: true,
             style: {
                 width:  "240px",
-                height: "260px",
+                height: "300px",
                 right:  "14px",
                 top:    "14px"
             },
@@ -535,10 +533,5 @@ window.addEventListener('message', function(e) {
         if (n > 0) return "+" + (currency || "$") + abs;
         if (n < 0) return "-" + (currency || "$") + abs;
         return (currency || "$") + "0.00";
-    }
-    _todayStartMs() {
-        var d = new Date();
-        d.setHours(0, 0, 0, 0);
-        return d.getTime();
     }
 }
