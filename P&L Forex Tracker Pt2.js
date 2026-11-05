@@ -3,24 +3,50 @@
    ================================================================
    INSTALL:
    1. Open Liquid Charts Pro → open any chart
-   2. Indicators → Advanced → Add UDI
-   3. Paste this file into the Code tab
-   4. Mode:           UDI + Framework
-   5. Trading action: Confirm
-   6. Click ADD
+   2. Remove the old P&L Card v5 from the chart
+   3. Indicators → Advanced → Add UDI
+   4. Paste this file into the Code tab
+   5. Mode:           UDI + Framework
+   6. Trading action: Confirm
+   7. Click ADD
+
+   The P&L stays through page refreshes, broker stalls, logouts and
+   new days. It only clears when you click Reset on the card.
+
+   The starting balance is saved outside the card's HTML, which is a
+   sandboxed iframe that can't keep data. It is saved in two places:
+   - the platform's own settings storage
+   - the browser's IndexedDB
+   Each account keeps its own record, and the newest record wins.
 ================================================================ */
+
+var PNL_SETTINGS_ID = "jcash-pnl-card-v5-stats";
+var PNL_DB_NAME     = "jcash-pnl-card-v5-stats";
+var PNL_DB_STORE    = "state";
+var PNL_LOAD_WAIT   = 15000;   // ms to wait for saved data before starting fresh
+
+// The card's frame is only as big as the card, so the mouse wheel and
+// clicks reach the chart everywhere else.
+var PNL_FRAME       = {w: 246, h: 400};
 
 class MyIndicator extends UserDefinedIndicator {
 
     onInit(data) {
-        this.$htmlCreated       = false;
-        this.$openingBalance    = null;
-        this.$todayDateStr      = new Date().toISOString().slice(0, 10);
-        this.$currency          = "$";
-        this.$lastParams        = {};
-        this.$waitingForRestore = true;
-        this.$posX              = null;
-        this.$posY              = 14;
+        this.$htmlCreated = false;
+        this.$currency    = "$";
+        this.$lastParams  = {};
+        this.$frameRight  = 8;
+        this.$frameTop    = 8;
+        this.$isMin       = false;
+        this.$lastMsg     = null;
+        this.$store       = {};     // account key → {o: starting balance, t: saved at, s: since}
+        this.$catLoaded   = false;
+        this.$idbLoaded   = false;
+        this.$catDirty    = false;
+        this.$resetWanted = false;
+        this.$startedAt   = Date.now();
+
+        this._loadSaved();
 
         var self = this;
         setInterval(function() { self._tick(); }, 1000);
@@ -51,13 +77,6 @@ class MyIndicator extends UserDefinedIndicator {
             this.$htmlCreated = true;
             this._buildCard();
         }
-        var todayStr = new Date().toISOString().slice(0, 10);
-        if (todayStr !== this.$todayDateStr) {
-            this.$todayDateStr      = todayStr;
-            this.$openingBalance    = null;
-            this.$waitingForRestore = false;
-            this.sendHTMLMessage({clearBalance: true});
-        }
     }
 
     onHTMLMessage(msg) {
@@ -65,78 +84,188 @@ class MyIndicator extends UserDefinedIndicator {
 
         // Reset button clicked on card
         if (msg.action === "resetBalance") {
-            this.$openingBalance    = null;
-            this.$waitingForRestore = false;
+            this.$resetWanted = true;
             return;
         }
 
-        // Panel restored saved balance on load
-        if (msg.action === "restoreBalance" && msg.balance > 0) {
-            var today = new Date().toISOString().slice(0, 10);
-            if (msg.date === today) {
-                this.$openingBalance    = msg.balance;
-                this.$waitingForRestore = false;
-            }
-        }
-
-        // Panel ready but nothing saved
+        // Card has loaded: fill it straight away, even if the broker is stalled
         if (msg.action === "ready") {
-            this.$waitingForRestore = false;
+            if (this.$lastMsg) this.sendHTMLMessage(this.$lastMsg);
+            return;
         }
 
-        // Drag position
-        if (msg.action === "drag") {
-            if (this.$posX === null) {
-                this.$posX = Math.max(0, (msg.winW || 800) - 254 - 20);
-            }
-            this.$posX = Math.max(0, this.$posX + (msg.dx || 0));
-            this.$posY = Math.max(0, this.$posY + (msg.dy || 0));
-            this.sendHTMLMessage({ moveX: this.$posX, moveY: this.$posY });
+        // Card dragged and dropped: remove the frame, add a new one in the new spot
+        if (msg.action === "move") {
+            this.$frameRight = Math.max(0, this.$frameRight - (msg.dx || 0));
+            this.$frameTop   = Math.max(0, this.$frameTop   + (msg.dy || 0));
+            var self = this;
+            this.removeHTML();
+            clearTimeout(this.$moveTimer);
+            this.$moveTimer = setTimeout(function() { self._placeFrame(); }, 150);
+            return;
+        }
+
+        // Remember minimized, so the card stays that way after a move
+        if (msg.action === "min") {
+            this.$isMin = !!msg.min;
         }
     }
 
+    // ── Saving and loading ───────────────────────────────────
+
+    _loadSaved() {
+        var self = this;
+
+        // Platform settings storage
+        try {
+            Framework.LoadCategorySettings(PNL_SETTINGS_ID, function(settings) {
+                self._merge(settings && settings.accounts);
+                self.$catLoaded = true;
+                self._afterLoad();
+            });
+            // A reset on another chart reaches this copy too
+            Framework.AddMessageHandler(function(Msg) {
+                if (Msg.is(FXB.MessageTypes.CATEGORY_SETTINGS_CHANGE)) {
+                    var s = Msg.categorySettings || Framework.categorySettings;
+                    self._merge(s && s.accounts);
+                }
+            });
+        } catch (e) {
+            this.$catLoaded = true;
+        }
+
+        // Browser IndexedDB
+        this._withDB(function(db) {
+            var req = db.transaction(PNL_DB_STORE, "readonly")
+                        .objectStore(PNL_DB_STORE).get("accounts");
+            req.onsuccess = function() {
+                self._merge(req.result);
+                db.close();
+                self.$idbLoaded = true;
+                self._afterLoad();
+            };
+            req.onerror = function() {
+                db.close();
+                self.$idbLoaded = true;
+                self._afterLoad();
+            };
+        }, function() {
+            self.$idbLoaded = true;
+            self._afterLoad();
+        });
+    }
+
+    _afterLoad() {
+        if (this.$catLoaded && this.$catDirty) {
+            this.$catDirty = false;
+            this._persist();
+            return;
+        }
+        // Both stores have answered: copy the newest records to both
+        if (this.$catLoaded && this.$idbLoaded && Object.keys(this.$store).length > 0) {
+            this._persist();
+        }
+    }
+
+    _withDB(onOpen, onFail) {
+        try {
+            var open = indexedDB.open(PNL_DB_NAME, 1);
+            open.onupgradeneeded = function() {
+                open.result.createObjectStore(PNL_DB_STORE);
+            };
+            open.onsuccess = function() { onOpen(open.result); };
+            open.onerror   = function() { onFail(); };
+            open.onblocked = function() { onFail(); };
+        } catch (e) {
+            onFail();
+        }
+    }
+
+    _merge(accounts) {
+        if (!accounts) return;
+        for (var key in accounts) {
+            var rec = accounts[key];
+            if (!rec || typeof rec.o !== "number") continue;
+            var cur = this.$store[key];
+            if (!cur || rec.t > cur.t) this.$store[key] = rec;
+        }
+    }
+
+    _persist() {
+        var accounts = this.$store;
+
+        if (this.$catLoaded) {
+            try { Framework.SaveCategorySettings({accounts: accounts}); } catch (e) {}
+        } else {
+            this.$catDirty = true;   // the platform requires a load before a save
+        }
+
+        this._withDB(function(db) {
+            try {
+                var tx = db.transaction(PNL_DB_STORE, "readwrite");
+                tx.objectStore(PNL_DB_STORE).put(accounts, "accounts");
+                tx.oncomplete = function() { db.close(); };
+                tx.onerror    = function() { db.close(); };
+            } catch (e) {
+                db.close();
+            }
+        }, function() {});
+    }
+
+    // ── Main loop ────────────────────────────────────────────
+
     _tick() {
         if (!this.$htmlCreated) return;
-        if (this.$waitingForRestore) return;
 
-        var balance     = 0;
-        var floating    = 0;
-        var currency    = this.$currency;
+        var acct;
+        try { acct = Framework.Account; } catch (e) { return; }
+        if (!acct || acct.accountId === undefined || acct.accountId === null) return;
+
+        var balance  = acct.balance    || 0;
+        var floating = acct.floatingPL || 0;
+
+        // Broker stalled or still connecting: leave the card as it is
+        if (!(balance > 0)) return;
+
+        var currency = acct.currencySymbol || acct.depositCurrency || this.$currency || "$";
+        this.$currency = currency;
+
         var accountType = "active";
-
-        try {
-            var acct = Framework.Account;
-            if (acct) {
-                balance  = acct.balance    || 0;
-                floating = acct.floatingPL || 0;
-                currency = acct.currencySymbol || acct.depositCurrency || "$";
-                this.$currency = currency;
-
-                var name = String(acct.accountName || acct.name || acct.login || acct.id || "").toLowerCase();
-                if (name.indexOf("dem") === 0 || name.indexOf("demo") >= 0 || acct.isDemo === true) {
-                    accountType = "demo";
-                } else if (name.indexOf("ecn") === 0 || name.indexOf("live") === 0 ||
-                           name.indexOf("real") === 0 || acct.isDemo === false) {
-                    accountType = "live";
-                }
-            }
-        } catch(e) { return; }
-
-        if (this.$openingBalance === null && balance > 0) {
-            this.$openingBalance = balance - floating;
-            // Persist to panel — survives refresh, logout, sleep
-            this.sendHTMLMessage({
-                saveBalance: this.$openingBalance,
-                saveDate:    this.$todayDateStr
-            });
+        var name = String(acct.accountName || acct.name || acct.login || acct.id || "").toLowerCase();
+        if (name.indexOf("dem") === 0 || name.indexOf("demo") >= 0 || acct.isDemo === true) {
+            accountType = "demo";
+        } else if (name.indexOf("ecn") === 0 || name.indexOf("live") === 0 ||
+                   name.indexOf("real") === 0 || acct.isDemo === false) {
+            accountType = "live";
         }
-        if (this.$openingBalance === null) return;
 
-        var realised = (balance - floating) - this.$openingBalance;
+        var features = acct.features || {};
+        var key = (features.platformInstance || "") + ":" + acct.accountId;
+        var now = Date.now();
+
+        if (this.$resetWanted) {
+            this.$resetWanted = false;
+            this.$store[key] = {o: balance - floating, t: now, s: now};
+            this._persist();
+        }
+
+        var rec = this.$store[key];
+        if (!rec) {
+            // Never start fresh until saved data has had the chance to arrive
+            var settled = this.$catLoaded && this.$idbLoaded;
+            if (!settled && now - this.$startedAt < PNL_LOAD_WAIT) return;
+
+            // t:0 means saved data that arrives late still takes priority
+            rec = {o: balance - floating, t: settled ? now : 0, s: now};
+            this.$store[key] = rec;
+            this._persist();
+        }
+
+        var realised = (balance - floating) - rec.o;
         var total    = realised + floating;
         var p        = this.$lastParams || {};
 
-        this.sendHTMLMessage({
+        this.$lastMsg = {
             acctName:    p.accountName || "Profit Stats",
             accent:      p.accentColor || "#3ddc84",
             balance:     currency + this._num(balance),
@@ -144,12 +273,14 @@ class MyIndicator extends UserDefinedIndicator {
             floatingRaw: floating,
             total:       this._pnl(total, currency),
             totalRaw:    total,
+            since:       rec.s,
             accountType: accountType
-        });
+        };
+        this.sendHTMLMessage(this.$lastMsg);
     }
 
     _buildCard() {
-        var html = `<!DOCTYPE html>
+        this.$html = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -161,21 +292,20 @@ html, body {
   background: transparent;
   overflow: hidden;
   font-family: 'Inter', sans-serif;
-  pointer-events: none;
 }
-#card { pointer-events: all; }
 #card {
   position: absolute;
-  top: 14px; right: 14px;
+  top: 6px; right: 6px;
   width: 234px;
   background: #12151e;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.75);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.6);
   user-select: none;
 }
 #card.mini { border-radius: 28px; width: 190px; }
+#card.moving { opacity: 0.55; }
 .abar { height: 3px; width: 100%; background: #3ddc84; }
 #dbar {
   height: 26px;
@@ -233,6 +363,7 @@ html, body {
 .pnl-val.pos { color: #3ddc84; }
 .pnl-val.neg { color: #ff5252; }
 .pnl-val.neu { color: rgba(255,255,255,0.4); }
+.since-txt { font-size: 10px; color: rgba(255,255,255,0.25); margin-top: 6px; }
 .flt-val { font-size: 22px; font-weight: 800; letter-spacing: -0.8px; line-height: 1; }
 .flt-val.pos { color: #3ddc84; }
 .flt-val.neg { color: #ff5252; }
@@ -302,8 +433,9 @@ html, body {
     </div>
 
     <div class="blk">
-      <div class="blk-lbl">Today's P&amp;L</div>
+      <div class="blk-lbl">Total P&amp;L</div>
       <div class="pnl-val neu" id="pnl">$0.00</div>
+      <div class="since-txt" id="since">Loading...</div>
     </div>
 
     <div class="blk">
@@ -317,7 +449,7 @@ html, body {
       </div>
       <div class="reset-bar" onclick="doReset()">
         <span class="reset-icon">↺</span>
-        <span class="reset-txt">Reset Today's P&amp;L</span>
+        <span class="reset-txt">Reset P&amp;L</span>
       </div>
     </div>
 
@@ -326,64 +458,7 @@ html, body {
 
 <script>
 var card  = document.getElementById('card');
-var isMin = false;
-
-// ── Triple-redundant persistence ──────────────────────────
-var SAVE_KEY = "pnlcard_v5_ob";
-
-function saveBalance(balance, date) {
-  var val = JSON.stringify({b: balance, d: date});
-  try { sessionStorage.setItem(SAVE_KEY, val); } catch(e) {}
-  try {
-    var wn = {}; try { wn = JSON.parse(window.name)||{}; } catch(e2) {}
-    wn[SAVE_KEY] = val; window.name = JSON.stringify(wn);
-  } catch(e) {}
-  try {
-    var exp = new Date(); exp.setHours(23,59,59,999);
-    document.cookie = SAVE_KEY+"="+encodeURIComponent(val)+"; expires="+exp.toUTCString()+"; path=/; SameSite=Lax";
-  } catch(e) {}
-}
-
-function loadBalance() {
-  var val = null;
-  try { val = sessionStorage.getItem(SAVE_KEY); } catch(e) {}
-  if (!val) {
-    try { var wn=JSON.parse(window.name)||{}; val=wn[SAVE_KEY]||null; } catch(e) {}
-  }
-  if (!val) {
-    try {
-      var cookies = document.cookie.split(";");
-      for (var i=0; i<cookies.length; i++) {
-        var c = cookies[i].trim();
-        if (c.indexOf(SAVE_KEY+"=")===0) {
-          val = decodeURIComponent(c.substring(SAVE_KEY.length+1)); break;
-        }
-      }
-    } catch(e) {}
-  }
-  if (!val) return null;
-  try { return JSON.parse(val); } catch(e) { return null; }
-}
-
-function clearBalance() {
-  try { sessionStorage.removeItem(SAVE_KEY); } catch(e) {}
-  try {
-    var wn={}; try{wn=JSON.parse(window.name)||{};}catch(e2){}
-    delete wn[SAVE_KEY]; window.name=JSON.stringify(wn);
-  } catch(e) {}
-  try { document.cookie=SAVE_KEY+"=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;"; } catch(e) {}
-}
-
-// Restore on load — send saved balance back to indicator
-(function() {
-  var today = new Date().toISOString().slice(0,10);
-  var saved = loadBalance();
-  if (saved && saved.b > 0 && saved.d === today) {
-    window.parent.postMessage({action:"restoreBalance", balance:saved.b, date:saved.d}, "*");
-  } else {
-    window.parent.postMessage({action:"ready"}, "*");
-  }
-})();
+var isMin = __PNL_MIN__;
 
 // ── Date ──────────────────────────────────────────────────
 function updateDate() {
@@ -398,7 +473,6 @@ setInterval(updateDate, 60000);
 
 // ── Reset ─────────────────────────────────────────────────
 function doReset() {
-  clearBalance();
   var p=document.getElementById('pnl'); if(p){p.textContent='$0.00'; p.className='pnl-val neu';}
   var f=document.getElementById('flt'); if(f){f.textContent='$0.00'; f.className='flt-val neu';}
   var mv=document.getElementById('mini-v'); if(mv){mv.textContent='$0.00'; mv.className='mini-val neu';}
@@ -406,46 +480,64 @@ function doReset() {
 }
 
 // ── Minimize ──────────────────────────────────────────────
-function toggleMin() {
-  isMin = !isMin;
+function applyMin() {
   document.getElementById('cnt').style.display     = isMin ? 'none' : 'flex';
   document.getElementById('minibar').style.display = isMin ? 'flex' : 'none';
   document.getElementById('mbtn').textContent      = isMin ? '＋' : '—';
   card.className = isMin ? 'mini' : '';
 }
+applyMin();
+function toggleMin() {
+  isMin = !isMin;
+  applyMin();
+  window.parent.postMessage({action:'min', min:isMin}, '*');
+}
 
 // ── Drag ──────────────────────────────────────────────────
-var dragging=false, startX, startY, startL, startT;
-document.getElementById('dbar').addEventListener('mousedown', function(e) {
+// The card moves to where you let go. Pointer capture keeps the
+// positions coming even when the pointer is outside the frame.
+var dragging=false, dragPointer=null, startX, startY, lastX, lastY;
+function onHandleDown(e) {
   if (e.target.tagName==='BUTTON') return;
-  dragging=true; startX=e.clientX; startY=e.clientY;
-  var r=card.getBoundingClientRect(); startL=r.left; startT=r.top;
-  card.style.right='auto'; card.style.left=startL+'px'; card.style.top=startT+'px';
+  dragging=true; dragPointer=e.pointerId;
+  startX=lastX=e.screenX; startY=lastY=e.screenY;
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch(err) {}
+  card.classList.add('moving');
   e.preventDefault();
-});
-document.addEventListener('mousemove', function(e) {
+}
+function onHandleMove(e) {
+  if (!dragging || e.pointerId!==dragPointer) return;
+  lastX=e.screenX; lastY=e.screenY;
+}
+function dragEnd(e) {
   if (!dragging) return;
-  card.style.left=Math.max(0,startL+(e.clientX-startX))+'px';
-  card.style.top =Math.max(0,startT+(e.clientY-startY))+'px';
+  if (e && e.screenX!==undefined && e.type==='pointerup') { lastX=e.screenX; lastY=e.screenY; }
+  dragging=false; dragPointer=null;
+  card.classList.remove('moving');
+  var dx=lastX-startX, dy=lastY-startY;
+  if (Math.abs(dx)>3 || Math.abs(dy)>3) {
+    window.parent.postMessage({action:'move', dx:dx, dy:dy}, '*');
+  }
+}
+['dbar','minibar'].forEach(function(id) {
+  var h=document.getElementById(id);
+  h.style.touchAction='none';
+  h.addEventListener('pointerdown', onHandleDown);
+  h.addEventListener('pointermove', onHandleMove);
+  h.addEventListener('pointerup', dragEnd);
+  h.addEventListener('pointercancel', dragEnd);
 });
-document.addEventListener('mouseup', function() { dragging=false; });
-document.getElementById('dbar').addEventListener('touchstart', function(e) {
-  if (e.target.tagName==='BUTTON') return;
-  dragging=true; var t=e.touches[0]; startX=t.clientX; startY=t.clientY;
-  var r=card.getBoundingClientRect(); startL=r.left; startT=r.top;
-  card.style.right='auto'; card.style.left=startL+'px'; card.style.top=startT+'px';
-  e.preventDefault();
-}, {passive:false});
-document.addEventListener('touchmove', function(e) {
-  if (!dragging) return;
-  var t=e.touches[0];
-  card.style.left=Math.max(0,startL+(t.clientX-startX))+'px';
-  card.style.top =Math.max(0,startT+(t.clientY-startY))+'px';
-}, {passive:true});
-document.addEventListener('touchend', function() { dragging=false; });
+document.addEventListener('pointerup', dragEnd);
+window.addEventListener('blur', dragEnd);
 
 // ── Helpers ───────────────────────────────────────────────
 function cls(v) { return v>0?'pos':v<0?'neg':'neu'; }
+function sinceText(ms) {
+  var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var d=new Date(ms), h=d.getHours(), ap=h>=12?'PM':'AM', m=d.getMinutes();
+  h=h%12||12;
+  return 'Since '+months[d.getMonth()]+' '+d.getDate()+', '+h+':'+(m<10?'0':'')+m+' '+ap;
+}
 function hexRgb(h) {
   h=h.replace('#','');
   if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
@@ -456,9 +548,6 @@ function hexRgb(h) {
 window.addEventListener('message', function(e) {
   var d=e.data; if(!d) return;
 
-  if (d.saveBalance && d.saveBalance>0) { saveBalance(d.saveBalance, d.saveDate); }
-  if (d.clearBalance) { clearBalance(); }
-
   if (d.accent) {
     var rgb=hexRgb(d.accent);
     document.getElementById('abar').style.background=d.accent;
@@ -467,6 +556,7 @@ window.addEventListener('message', function(e) {
     badge.style.color=d.accent; badge.style.borderColor='rgba('+rgb+',0.35)';
     badge.style.background='rgba('+rgb+',0.10)';
   }
+  if (d.since) document.getElementById('since').textContent=sinceText(d.since);
   if (d.acctName) document.getElementById('aname').textContent=d.acctName.toUpperCase();
   if (d.balance)  document.getElementById('bal').textContent=d.balance;
   if (d.total!==undefined) {
@@ -485,18 +575,26 @@ window.addEventListener('message', function(e) {
     btxt.textContent=lbl; bdot2.style.background=col; bdot2.style.boxShadow='0 0 5px '+col;
     badge2.style.color=col; badge2.style.borderColor=col; badge2.style.background='rgba('+hexRgb(col)+',0.10)';
   }
-  if (d.moveX!==undefined) {
-    card.style.right='auto'; card.style.left=d.moveX+'px'; card.style.top=d.moveY+'px';
-  }
 });
+
+window.parent.postMessage({action:'ready'}, '*');
 </script>
 </body>
 </html>`;
 
+        this._placeFrame();
+    }
+
+    _placeFrame() {
         this.createHTML({
             foreground: true,
-            style: { width:"100%", height:"100%", left:"0", top:"0" },
-            html: html
+            style: {
+                width:  PNL_FRAME.w + "px",
+                height: PNL_FRAME.h + "px",
+                right:  this.$frameRight + "px",
+                top:    this.$frameTop + "px"
+            },
+            html: this.$html.replace("__PNL_MIN__", this.$isMin ? "true" : "false")
         });
     }
 
